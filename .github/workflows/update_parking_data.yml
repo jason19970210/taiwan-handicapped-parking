@@ -1,0 +1,178 @@
+name: Update Taiwan Handicapped Parking Data
+
+on:
+  schedule:
+    # Monday at 9am UTC+8 = 1am UTC
+    - cron: '0 1 * * 1'
+  workflow_dispatch:  # Manual trigger
+
+env:
+  PYTHON_VERSION: '3.11'
+  DATA_FILE: 'data/parking_locations.csv'
+  BRANCH_PREFIX: 'update-parking-data'
+
+jobs:
+  collect-and-update:
+    runs-on: ubuntu-latest
+    outputs:
+      data_changed: ${{ steps.check_diff.outputs.changed }}
+      commit_sha: ${{ steps.commit_changes.outputs.commit_sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for proper diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip list
+
+      - name: Download and process data
+        id: process_data
+        run: |
+          python scripts/main.py collect
+        env:
+          LOG_LEVEL: INFO
+
+      - name: Check for changes
+        id: check_diff
+        run: |
+          if git diff --quiet ${{ env.DATA_FILE }}; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes detected in parking data"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Changes detected in parking data"
+            git diff --stat ${{ env.DATA_FILE }}
+            echo "### Changes Detected" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            git diff --stat ${{ env.DATA_FILE }} >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create temporary branch and commit
+        id: commit_changes
+        if: steps.check_diff.outputs.changed == 'true'
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d%H%M%S')
+          BRANCH_NAME="${{ env.BRANCH_PREFIX }}-${TIMESTAMP}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH_NAME"
+          git add ${{ env.DATA_FILE }}
+          git commit -m "$(cat <<'EOF'
+          chore: update parking data - $TIMESTAMP
+
+          Automated update of Taiwan handicapped parking locations.
+
+          Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+          EOF
+          )"
+          git push origin "$BRANCH_NAME"
+
+          # Merge to main
+          git checkout main
+          git merge "$BRANCH_NAME" --no-ff -m "Merge parking data update - $TIMESTAMP"
+          git push origin main
+
+          # Cleanup branch
+          git push origin --delete "$BRANCH_NAME"
+
+          COMMIT_SHA=$(git rev-parse HEAD)
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+
+          echo "### Data Updated Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: $COMMIT_SHA" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload logs as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-collection-logs
+          path: logs/
+          retention-days: 30
+
+  sync-google-maps:
+    runs-on: ubuntu-latest
+    needs: collect-and-update
+    if: needs.collect-and-update.outputs.data_changed == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.collect-and-update.outputs.commit_sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies with Playwright
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Restore Google auth state
+        id: restore_auth
+        uses: actions/cache/restore@v4
+        with:
+          path: .github/auth/google_auth_state.json
+          key: google-maps-auth-${{ github.repository }}
+
+      - name: Authenticate Google Maps
+        if: steps.restore_auth.outputs.cache-hit != 'true'
+        run: |
+          python scripts/main.py authenticate
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASSWORD: ${{ secrets.GOOGLE_PASSWORD }}
+          AUTH_STATE_PATH: .github/auth/google_auth_state.json
+          HEADLESS: true
+
+      - name: Save Google auth state
+        if: steps.restore_auth.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .github/auth/google_auth_state.json
+          key: google-maps-auth-${{ github.repository }}
+
+      - name: Sync locations to Google Maps
+        run: |
+          python scripts/main.py sync-maps
+        env:
+          AUTH_STATE_PATH: .github/auth/google_auth_state.json
+          DATA_FILE: ${{ env.DATA_FILE }}
+          HEADLESS: true
+          RATE_LIMIT_DELAY: 3
+        timeout-minutes: 120  # 2 hour timeout for large datasets
+
+      - name: Upload sync logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-maps-sync-logs
+          path: logs/
+          retention-days: 30
+
+      - name: Sync summary
+        if: always()
+        run: |
+          echo "### Google Maps Sync Complete" >> $GITHUB_STEP_SUMMARY
+          if [ -f "logs/playwright.log" ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 20 logs/playwright.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi

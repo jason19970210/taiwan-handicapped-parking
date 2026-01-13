@@ -205,3 +205,34 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project specific
+# Authentication files
+.github/auth/*.json
+google_auth_state.json
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+
+# Data (keep CSV in version control for tracking changes)
+# data/*.csv  # Commented out - we want to track parking_locations.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# macOS
+.DS_Store

@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "sources": [
+    {
+      "id": "taipei_city",
+      "name": "Taipei City Handicapped Parking",
+      "enabled": true,
+      "handler": "taipei_handler",
+      "config": {
+        "url": "https://data.taipei/api/frontstage/tpeod/dataset/resource.download?rid=7e2f32a0-9201-4666-a0ed-11034e6c2b66",
+        "format": "shapefile",
+        "coordinate_system": "TWD97",
+        "filter_field": "pktype",
+        "filter_value": "03",
+        "fields_mapping": {
+          "city": "fixed:Taipei City",
+          "area": "district",
+          "road": "road_name"
+        }
+      }
+    },
+    {
+      "id": "new_taipei_city",
+      "name": "New Taipei City Handicapped Parking",
+      "enabled": true,
+      "handler": "new_taipei_handler",
+      "config": {
+        "url": "https://data.ntpc.gov.tw/api/datasets/1e548c60-0b04-4507-bf60-f3be651db642/csv",
+        "format": "csv_paginated",
+        "coordinate_system": "TWD97",
+        "page_size": 1000,
+        "filter_field": "charged",
+        "filter_pattern": "身汽",
+        "fields_mapping": {
+          "city": "fixed:New Taipei City",
+          "area": "area",
+          "road": "address",
+          "x": "X",
+          "y": "Y"
+        }
+      }
+    }
+  ],
+  "output": {
+    "file": "data/parking_locations.csv",
+    "columns": ["city", "area", "road", "dd_lat", "dd_long", "dms_lat", "dms_long"],
+    "deduplication_keys": ["city", "area", "road", "dd_lat", "dd_long"]
+  }
+}
