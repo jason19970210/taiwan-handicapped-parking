@@ -105,8 +105,11 @@ class CoordinateConverter:
         """
         try:
             from pyproj import Transformer
-            transformer = Transformer.from_crs("EPSG:3826", "EPSG:4326", always_xy=False)
-            lat, lon = transformer.transform(y, x)  # Note: transform expects (lat/y, lon/x)
+            # always_xy=True ensures input/output is always (x, y) order
+            # For TWD97: (x, y) = (easting, northing)
+            # For WGS84: (x, y) = (longitude, latitude)
+            transformer = Transformer.from_crs("EPSG:3826", "EPSG:4326", always_xy=True)
+            lon, lat = transformer.transform(x, y)
             return lat, lon
         except ImportError:
             raise ImportError(
@@ -128,8 +131,11 @@ class CoordinateConverter:
         """
         try:
             from pyproj import Transformer
-            transformer = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=False)
-            y, x = transformer.transform(lat, lon)
+            # always_xy=True ensures input/output is always (x, y) order
+            # For WGS84: (x, y) = (longitude, latitude)
+            # For TWD97: (x, y) = (easting, northing)
+            transformer = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
+            x, y = transformer.transform(lon, lat)
             return x, y
         except ImportError:
             raise ImportError(
