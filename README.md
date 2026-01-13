@@ -5,8 +5,14 @@ Automated system for collecting, managing, and syncing handicapped parking locat
 ## Features
 
 - **Automated Data Collection**: Fetches handicapped parking data from Taipei City and New Taipei City open data platforms
+- **Smart Caching**: 1-week cache for API data to reduce bandwidth and improve performance
 - **Smart Filtering**: Filters locations by parking type (handicapped vehicle parking)
-- **Coordinate Conversion**: Converts TWD97 coordinates to WGS84 and DMS formats
+- **Automatic Coordinate System Detection**: Auto-detects WGS84 or TWD97 from shapefile CRS or coordinate ranges
+- **Polygon Geometry Support**: Extracts centroid coordinates from polygon parking zones
+- **Flexible Coordinate Handling**: Supports both TWD97 (with conversion) and WGS84 (direct use) coordinate systems
+- **Coordinate Conversion**: Converts TWD97 coordinates to WGS84 and DMS formats using pyproj
+- **Data Validation**: Validates coordinate fields while allowing optional area/road information
+- **Debug Mode**: Saves intermediate data to CSV files for troubleshooting
 - **Google Maps Integration**: Automatically syncs locations to a Google Maps saved list
 - **GitHub Actions Automation**: Scheduled weekly updates with manual trigger support
 - **Comprehensive Logging**: Detailed logs for data retrieval and Playwright operations
@@ -14,18 +20,31 @@ Automated system for collecting, managing, and syncing handicapped parking locat
 ## Data Sources
 
 ### Current Coverage
-- **Taipei City**: Shapefile data from Taipei City Open Data Platform
-- **New Taipei City**: CSV API with pagination from New Taipei City Open Data
+- **Taipei City**:
+  - Format: Shapefile data (ZIP archive) from Taipei City Open Data Platform
+  - Geometry: Polygon zones (centroid used for point coordinates)
+  - Filtering: `pktype == "03"` for handicapped parking
+  - Coordinates: Auto-detected (WGS84 or TWD97)
+  - Caching: 1-week cache for ZIP files
+
+- **New Taipei City**:
+  - Format: CSV API with pagination from New Taipei City Open Data
+  - Filtering: `NAME` field contains "汽車身心障礙專用"
+  - Coordinates: WGS84 (lat/lon fields used directly)
+  - Page size: 1000 records per request
+  - Caching: 1-week cache for API responses
 
 ### Data Format
 CSV file with columns:
-- `city`: City name
-- `area`: District/area
-- `road`: Street/road name
-- `dd_lat`: Decimal degrees latitude (WGS84)
-- `dd_long`: Decimal degrees longitude (WGS84)
-- `dms_lat`: DMS format latitude (e.g., `25°01'58.80"N`)
-- `dms_long`: DMS format longitude (e.g., `121°33'55.44"E`)
+- `city`: City name (required)
+- `area`: District/area (optional, may be empty)
+- `road`: Street/road name (optional, may be empty)
+- `dd_lat`: Decimal degrees latitude in WGS84 (required)
+- `dd_long`: Decimal degrees longitude in WGS84 (required)
+- `dms_lat`: DMS format latitude (required, e.g., `25°01'58.80"N`)
+- `dms_long`: DMS format longitude (required, e.g., `121°33'55.44"E`)
+
+**Note**: Area and road fields may be empty as source data sometimes has missing values. Only coordinate fields (dd_lat, dd_long, dms_lat, dms_long) are validated for completeness.
 
 ## Setup
 
@@ -137,6 +156,13 @@ taiwan-handicapped-parking/
 │       ├── authenticator.py         # Google auth handler
 │       ├── map_saver.py             # Location sync logic
 │       └── selectors.py             # UI selectors
+├── tests/                           # Test files
+│   ├── test_geocoding.py            # Geocoding tests
+│   └── test_handlers.py             # Handler tests
+├── cache/                           # Cache directory (ignored)
+│   ├── taipei_city/                 # Taipei City cache
+│   └── new_taipei_city/             # New Taipei City cache
+├── debug/                           # Debug CSV exports (ignored)
 ├── logs/                            # Log files (ignored)
 │   ├── data_retrieval.log
 │   ├── playwright.log
@@ -180,6 +206,84 @@ Edit `data/data_sources.json`:
 
 Then create a handler in `scripts/data_collection/new_city_handler.py` implementing `BaseDataHandler`.
 
+## Technical Details
+
+### Coordinate System Detection
+
+The system automatically detects coordinate systems for shapefile data:
+
+1. **CRS Metadata**: Checks shapefile CRS information
+   - EPSG:4326 → WGS84 (coordinates used directly)
+   - EPSG:3826 → TWD97 (coordinates converted to WGS84)
+
+2. **Auto-detection by Range**: When CRS is unknown or non-standard
+   - TWD97 range: X ∈ [100000, 400000], Y ∈ [2400000, 2900000]
+   - WGS84 range: X ∈ [-180, 180], Y ∈ [-90, 90]
+
+3. **Fallback**: Assumes TWD97 if unable to detect
+
+### Polygon Geometry Handling
+
+Taipei City parking data uses polygon geometries representing parking zones:
+
+- **Centroid Extraction**: System extracts the geometric center (centroid) of each polygon
+- **Consistent Representation**: All locations represented as point coordinates for Google Maps
+- **Geometry Types Supported**: Point, Polygon, MultiPolygon
+
+### Coordinate Conversion
+
+The system uses [pyproj](https://pyproj4.github.io/pyproj/) for accurate coordinate transformations:
+
+- **TWD97 to WGS84**: Converts Taiwan Datum 1997 (EPSG:3826) to World Geodetic System 1984 (EPSG:4326)
+- **Consistent Ordering**: Uses `always_xy=True` for predictable coordinate ordering
+  - TWD97: (x, y) = (easting, northing)
+  - WGS84: (x, y) = (longitude, latitude)
+- **DMS Conversion**: Generates degrees-minutes-seconds format from decimal degrees
+- **Round-trip Accuracy**: Maintains sub-meter precision in coordinate transformations
+
+### Data Caching
+
+Both handlers implement 1-week caching to optimize performance:
+
+- **Taipei City**: Caches downloaded ZIP files containing shapefiles
+- **New Taipei City**: Caches paginated API responses
+- **Cache Location**: `cache/<city_name>/` directories
+- **Expiry**: 7 days from last fetch
+- **Benefits**: Reduces bandwidth, speeds up repeated runs, respects API rate limits
+
+### Debug Mode
+
+Handlers save intermediate data for troubleshooting:
+
+- **Raw Data**: Original data from source before filtering
+- **Filtered Data**: Data after applying filter criteria
+- **Transformed Data**: Final standardized output
+- **Location**: `debug/` directory with timestamped filenames
+- **Format**: CSV with UTF-8-sig encoding for Excel compatibility
+
+## Data Validation
+
+The system validates CSV output using Pydantic models:
+
+### Validation Rules
+
+- **Required Fields**: city, dd_lat, dd_long, dms_lat, dms_long
+- **Optional Fields**: area, road (may be empty)
+- **Coordinate Validation**:
+  - Latitude: -90 to 90 degrees
+  - Longitude: -180 to 180 degrees
+  - Taiwan bounds: Lat 21.5-25.5°N, Lon 119.5-122.5°E
+- **DMS Format**: Must contain °, ', " symbols and N/S/E/W direction
+
+### Validation Process
+
+1. Check for required columns
+2. Validate coordinate fields for missing values
+3. Check coordinate ranges (global and Taiwan-specific)
+4. Verify DMS format strings
+5. Detect duplicate records
+6. Generate validation report with errors and warnings
+
 ## Logging
 
 The system generates three log files:
@@ -187,6 +291,7 @@ The system generates three log files:
 - `logs/data_retrieval.log`: Data collection operations
   - Source downloads, filtering, coordinate conversions
   - Record counts and statistics
+  - Cache hits and misses
   - Errors during data processing
 
 - `logs/playwright.log`: Google Maps automation
@@ -198,6 +303,7 @@ The system generates three log files:
   - Main script execution
   - Configuration loading
   - Overall workflow status
+  - Validation results
 
 ## Troubleshooting
 
@@ -213,9 +319,17 @@ If Google authentication fails:
 ### Data Collection Fails
 
 1. **Check network**: Ensure data source URLs are accessible
-2. **Verify field names**: Data sources may change field names - check logs and update `fields_mapping`
-3. **Check coordinates**: Ensure coordinate values are in valid ranges
-4. **Review logs**: Check `logs/data_retrieval.log` for specific errors
+2. **Clear cache**: Delete `cache/` directory to force fresh download
+3. **Check debug output**: Review CSV files in `debug/` directory to inspect intermediate data
+4. **Verify field names**: Data sources may change field names - check logs and update `fields_mapping`
+5. **Check coordinates**: Ensure coordinate values are in valid ranges
+6. **Review logs**: Check `logs/data_retrieval.log` for specific errors
+
+### Cache Issues
+
+1. **Stale data**: Delete `cache/<city_name>/` to force fresh fetch
+2. **Cache corruption**: Remove cache files and re-run collection
+3. **Disk space**: Ensure sufficient space for cache files (typically < 10MB per city)
 
 ### Google Maps Sync Issues
 
@@ -228,16 +342,31 @@ If Google authentication fails:
 
 ### Running Tests
 
+The project includes comprehensive test coverage:
+
 ```bash
 # Run all tests
 pytest tests/ -v
 
-# Run specific test file
+# Run specific test suite
 pytest tests/test_geocoding.py -v
 
-# Run with coverage
+# Run with coverage report
 pytest tests/ --cov=scripts --cov-report=html
+
+# Run only coordinate conversion tests
+pytest tests/test_geocoding.py::TestCoordinateConverter -v
 ```
+
+**Test Coverage**:
+- `test_geocoding.py`: Coordinate conversion, DMS format, validation, Taiwan bounds
+- `test_handlers.py`: Data handler implementations (if implemented)
+
+**Note**: Coordinate conversion tests require `pyproj` to be installed. The tests validate:
+- Decimal to DMS conversion accuracy
+- TWD97 ↔ WGS84 coordinate transformations
+- Round-trip conversion precision (< 10 meters)
+- Taiwan bounds checking
 
 ### Local Development
 
