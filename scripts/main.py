@@ -4,9 +4,15 @@ Provides commands for data collection and Google Maps synchronization.
 """
 
 import argparse
+import logging
 import sys
 import json
 from pathlib import Path
+
+# Add project root to Python path to allow absolute imports
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from scripts.data_collection.merger import DataMerger
 from scripts.google_maps.authenticator import GoogleMapsAuthenticator
@@ -14,10 +20,10 @@ from scripts.google_maps.map_saver import GoogleMapsSaver
 from scripts.utils.logger import setup_logger
 from scripts.utils.csv_validator import validate_csv_file
 
-logger = setup_logger(__name__, log_file='logs/app.log')
+logger = setup_logger(__name__, level=logging.DEBUG, log_file="logs/app.log")
 
 
-def load_config(config_path: str = 'data/data_sources.json') -> dict:
+def load_config(config_path: str = "data/data_sources.json") -> dict:
     """
     Load configuration from JSON file.
 
@@ -34,7 +40,7 @@ def load_config(config_path: str = 'data/data_sources.json') -> dict:
     logger.info(f"Loading configuration from: {config_path}")
 
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         logger.info("Configuration loaded successfully")
         logger.info(f"Found {len(config.get('sources', []))} data sources")
@@ -67,13 +73,13 @@ def collect_data():
         df = merger.collect_and_merge()
 
         # Save to CSV
-        output_file = config['output']['file']
+        output_file = config["output"]["file"]
         logger.info(f"Saving data to: {output_file}")
 
         # Ensure output directory exists
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
 
-        df.to_csv(output_file, index=False, encoding='utf-8')
+        df.to_csv(output_file, index=False, encoding="utf-8-sig")
         logger.info(f"Successfully saved {len(df)} records to {output_file}")
 
         # Validate the saved CSV
@@ -87,7 +93,9 @@ def collect_data():
             for error in validation_result.errors[:10]:  # Show first 10 errors
                 logger.warning(f"  - {error}")
             if len(validation_result.errors) > 10:
-                logger.warning(f"  ... and {len(validation_result.errors) - 10} more errors")
+                logger.warning(
+                    f"  ... and {len(validation_result.errors) - 10} more errors"
+                )
 
         logger.info("=" * 60)
         logger.info("Data collection complete")
@@ -142,7 +150,7 @@ def sync_to_maps():
     try:
         # Load configuration to get CSV file path
         config = load_config()
-        csv_file = config['output']['file']
+        csv_file = config["output"]["file"]
 
         # Check if CSV file exists
         if not Path(csv_file).exists():
@@ -177,9 +185,9 @@ def main():
         int: Exit code
     """
     parser = argparse.ArgumentParser(
-        description='Taiwan Handicapped Parking Data Management',
+        description="Taiwan Handicapped Parking Data Management",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog="""
 Commands:
   collect       Collect data from all configured sources and merge
   authenticate  Authenticate with Google Maps and save session
@@ -196,36 +204,32 @@ Environment Variables:
   AUTH_STATE_PATH   Path to save auth state (default: .github/auth/google_auth_state.json)
   HEADLESS          Run browser in headless mode (default: true)
   RATE_LIMIT_DELAY  Delay between requests in seconds (default: 3)
-        '''
+        """,
     )
 
     parser.add_argument(
-        'command',
-        choices=['collect', 'authenticate', 'sync-maps'],
-        help='Command to execute'
+        "command",
+        choices=["collect", "authenticate", "sync-maps"],
+        help="Command to execute",
     )
 
     parser.add_argument(
-        '--config',
-        default='data/data_sources.json',
-        help='Path to configuration file (default: data/data_sources.json)'
+        "--config",
+        default="data/data_sources.json",
+        help="Path to configuration file (default: data/data_sources.json)",
     )
 
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
-    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
     args = parser.parse_args()
 
     # Execute command
     try:
-        if args.command == 'collect':
+        if args.command == "collect":
             exit_code = collect_data()
-        elif args.command == 'authenticate':
+        elif args.command == "authenticate":
             exit_code = authenticate_google()
-        elif args.command == 'sync-maps':
+        elif args.command == "sync-maps":
             exit_code = sync_to_maps()
         else:
             logger.error(f"Unknown command: {args.command}")
@@ -241,5 +245,5 @@ Environment Variables:
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
