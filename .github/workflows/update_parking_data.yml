@@ -121,7 +121,7 @@ jobs:
   sync-google-maps:
     runs-on: ubuntu-latest
     needs: collect-and-update
-    if: needs.collect-and-update.outputs.data_changed == 'true'
+    if: needs.collect-and-update.outputs.data_changed == 'true' || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout repository
