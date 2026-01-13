@@ -5,11 +5,12 @@ Handles dynamic handler loading, data merging, and deduplication.
 
 import pandas as pd
 import importlib
+import logging
 from typing import Dict, List, Any
 
 from ..utils.logger import setup_logger
 
-logger = setup_logger(__name__, log_file='logs/data_retrieval.log')
+logger = setup_logger(__name__, log_file='logs/data_retrieval.log', level=logging.DEBUG)
 
 
 class DataMerger:
@@ -144,8 +145,8 @@ class DataMerger:
 
             HandlerClass = getattr(module, class_name)
 
-            # Instantiate handler with source config
-            handler = HandlerClass(source.get('config', {}))
+            # Instantiate handler with source config and source_id
+            handler = HandlerClass(source.get('config', {}), source_id=source.get('id'))
             logger.debug(f"Successfully loaded handler: {class_name}")
 
             return handler

@@ -5,13 +5,14 @@ Handles login automation and persistent authentication state.
 
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
 import os
+import logging
 from pathlib import Path
 from typing import Optional
 
 from ..utils.logger import setup_logger
 from .selectors import GoogleMapsSelectors
 
-logger = setup_logger(__name__, log_file='logs/playwright.log')
+logger = setup_logger(__name__, log_file='logs/playwright.log', level=logging.DEBUG)
 
 
 class GoogleMapsAuthenticator:
