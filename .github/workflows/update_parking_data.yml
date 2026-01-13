@@ -35,12 +35,28 @@ jobs:
           pip install -r requirements.txt
           pip list
 
+      - name: Restore data cache
+        id: restore_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: cache/
+          key: parking-data-cache-${{ github.run_id }}
+          restore-keys: |
+            parking-data-cache-
+
       - name: Download and process data
         id: process_data
         run: |
           python scripts/main.py collect
         env:
           LOG_LEVEL: INFO
+
+      - name: Save data cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache/
+          key: parking-data-cache-${{ github.run_id }}
 
       - name: Check for changes
         id: check_diff
