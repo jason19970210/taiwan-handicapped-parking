@@ -236,3 +236,7 @@ playwright/.cache/
 
 # macOS
 .DS_Store
+
+# Cache and Debug directories
+cache/
+debug/
