@@ -19,12 +19,20 @@ class ParkingLocation(BaseModel):
     dms_lat: str
     dms_long: str
 
-    @field_validator('city', 'area', 'road')
+    @field_validator('city')
     @classmethod
-    def validate_not_empty(cls, v: str) -> str:
-        """Validate that string fields are not empty."""
+    def validate_city_not_empty(cls, v: str) -> str:
+        """Validate that city field is not empty."""
         if not v or not v.strip():
-            raise ValueError('Field cannot be empty')
+            raise ValueError('City field cannot be empty')
+        return v.strip()
+
+    @field_validator('area', 'road')
+    @classmethod
+    def validate_optional_string(cls, v: str) -> str:
+        """Allow empty strings for area and road (source data may have missing values)."""
+        if v is None:
+            return ''
         return v.strip()
 
     @field_validator('dd_lat')
@@ -166,8 +174,10 @@ def validate_csv(df: pd.DataFrame) -> ValidationResult:
         duplicate_rows = df[duplicates].index.tolist()
         result.add_warning(f"Duplicate row indices: {duplicate_rows}")
 
-    # Check for missing values
-    for col in required_columns:
+    # Check for missing values in coordinate fields only
+    # (area and road can be empty as source data may have missing values)
+    coordinate_columns = ['dd_lat', 'dd_long', 'dms_lat', 'dms_long']
+    for col in coordinate_columns:
         missing = df[col].isna().sum()
         if missing > 0:
             result.add_error(f"Column '{col}' has {missing} missing values")
@@ -245,8 +255,13 @@ def fix_common_issues(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].str.strip()
 
-    # Remove rows with any missing values
-    df = df.dropna()
+    # Fill empty area/road with empty string (allow missing values)
+    df['area'] = df['area'].fillna('')
+    df['road'] = df['road'].fillna('')
+
+    # Remove rows with missing coordinate values only
+    coordinate_columns = ['dd_lat', 'dd_long', 'dms_lat', 'dms_long']
+    df = df.dropna(subset=coordinate_columns)
 
     # Remove duplicates
     df = remove_duplicates(df)
