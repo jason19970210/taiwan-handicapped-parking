@@ -14,8 +14,8 @@
         "filter_value": "03",
         "fields_mapping": {
           "city": "fixed:Taipei City",
-          "area": "district",
-          "road": "road_name"
+          "area": "area_name",
+          "road": "roadname"
         }
       }
     },
@@ -25,18 +25,18 @@
       "enabled": true,
       "handler": "new_taipei_handler",
       "config": {
-        "url": "https://data.ntpc.gov.tw/api/datasets/1e548c60-0b04-4507-bf60-f3be651db642/csv",
+        "url": "https://data.ntpc.gov.tw/api/datasets/54a507c4-c038-41b5-bf60-bbecb9d052c6/csv",
         "format": "csv_paginated",
-        "coordinate_system": "TWD97",
+        "coordinate_system": "WGS84",
         "page_size": 1000,
-        "filter_field": "charged",
-        "filter_pattern": "身汽",
+        "filter_field": "NAME",
+        "filter_pattern": "汽車身心障礙專用",
         "fields_mapping": {
           "city": "fixed:New Taipei City",
-          "area": "area",
-          "road": "address",
-          "x": "X",
-          "y": "Y"
+          "area": "AreaCode",
+          "road": "ROADNAME",
+          "lat": "latitude",
+          "lon": "longitude"
         }
       }
     }

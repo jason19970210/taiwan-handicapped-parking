@@ -16,7 +16,7 @@ class BaseDataHandler(ABC):
     to provide consistent data processing.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], source_id: str = None):
         """
         Initialize the handler with configuration.
 
@@ -27,12 +27,14 @@ class BaseDataHandler(ABC):
                 - coordinate_system: Coordinate system (TWD97, WGS84)
                 - fields_mapping: Field name mappings
                 - other source-specific configurations
+            source_id: Source identifier (e.g., 'taipei_city', 'new_taipei_city')
         """
         self.config = config
         self.url = config.get('url')
         self.format = config.get('format')
         self.coordinate_system = config.get('coordinate_system', 'WGS84')
         self.fields_mapping = config.get('fields_mapping', {})
+        self.source_id = source_id
 
     @abstractmethod
     def fetch_data(self) -> pd.DataFrame:
@@ -96,6 +98,7 @@ class BaseDataHandler(ABC):
         """
         raw_data = self.fetch_data()
         transformed_data = self.transform_data(raw_data)
+
         return transformed_data
 
     def _get_field_value(self, row: pd.Series, mapping_key: str, default: str = '') -> str:
