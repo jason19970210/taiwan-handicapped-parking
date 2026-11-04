@@ -49,7 +49,7 @@ class GoogleMapsSelectors:
     # Place-page button; exactly ONE must match (the sync refuses to click otherwise). Its
     # data-value is "Saved" (aria-label "Saved") when the place is already on some list and
     # presumably "Save" when on none. The left-rail "Saved" item is not such a button.
-    SAVE_BUTTON = 'button[data-value="Save"], button[data-value="Saved"]'
+    SAVE_BUTTON = 'button[data-value^="Save"]'   # live values: "Save", "Saved", "Saved (2)" (on two lists)
     # Clicking it opens ONE div[role="menu"][aria-label="Save in your lists"]. The two role=dialog
     # elements on the place page are unrelated. List rows and "New list" are looked up only inside
     # the one menu that contains rows.

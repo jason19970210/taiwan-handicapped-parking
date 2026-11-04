@@ -377,8 +377,8 @@ def _read_checked(page, name: str, lat: float, lon: float) -> bool:
 def _verify(page, name: str, lat: float, lon: float, expected: bool, attempts: int = 3) -> None:
     """Reload the place and check the tick persisted (the dialog may close itself after a click)."""
     seen = None
-    for _ in range(attempts):
-        page.wait_for_timeout(1500)
+    for k in range(attempts):
+        page.wait_for_timeout(2000 * 2 ** k)      # 2, 4, 8 s: Google can lag before a fresh view shows the change
         seen = _read_checked(page, name, lat, lon)
         if seen == expected:
             return
@@ -407,14 +407,17 @@ def ensure_list(page, name: str, lat: float, lon: float) -> str:
                 "list name dialog", "CREATE_DIALOG")
     _one(page, form.locator(S.LIST_NAME_INPUT), "list name input", "LIST_NAME_INPUT").fill(name, timeout=10000)
     _one(page, form.locator(S.CREATE_LIST_CONFIRM), "create button", "CREATE_LIST_CONFIRM").click(timeout=10000)
-    page.wait_for_timeout(2000)
-    # verify from a fresh page that the list now exists
-    _open_save_dialog(page, lat, lon)
-    try:
-        _require_list_item(page, name)
-    finally:
-        _close_dialog(page)
-    return "created"
+    # Google shows a new list only after a delay (live: not on the first fresh view 2 s later), so poll fresh views.
+    # If it never shows, the list may still exist: the next run finds it and adopts it instead of creating another.
+    for wait_ms in (3000, 6000, 12000):
+        page.wait_for_timeout(wait_ms)
+        _open_save_dialog(page, lat, lon)
+        try:
+            if _find_list_item(page, name) is not None:
+                return "created"
+        finally:
+            _close_dialog(page)
+    raise OpFailed(f"list '{name}' not visible 21 s after Create; the next run adopts it if Google created it")
 
 
 def add_point(page, name: str, lat: float, lon: float) -> str:

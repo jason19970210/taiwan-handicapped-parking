@@ -542,6 +542,8 @@ class FakePage:
         self.row_role = "menuitemradio"
         self.extra_form_inputs = 0           # additional text inputs inside the New list form
         self.create_variant = "both"         # "both" | "data-value" | "aria-label" | "icon-only"
+        self.create_lag = 0                  # page views after "Create" during which Google does not show the new list yet
+        self.lag_name, self.lag_views, self._hide = None, 0, False
 
     # --- test conveniences
     @property
@@ -592,9 +594,9 @@ class FakePage:
                               lines=["Anyone with the link", "Private"]))
         els.append(El("input", {"type": "text", "role": "combobox", "id": "searchboxinput"}))
         els.append(El("textarea", {}))
-        on_some_list = bool(self.membership(self.coords))
+        n = len([x for x in self.membership(self.coords) if self._shown(x)])
         for _ in range(self.save_button_count):
-            v = "Saved" if on_some_list else "Save"
+            v = "Save" if n == 0 else "Saved" if n == 1 else f"Saved ({n})"     # live: "Saved (2)" on two lists
             els.append(El("button", {"data-value": v, "aria-label": v}, text=v, kind="save_button"))
         for name in self.stray_rows:
             els.append(El("div", {"role": "menuitemradio", "aria-checked": "false"}, lines=[name, "Private · 1 place"]))
@@ -603,6 +605,8 @@ class FakePage:
                 menu = El("div", {"role": "menu", "aria-label": "Save in your lists"})
                 els.append(menu)
                 for i, name in enumerate(self.list_names):
+                    if not self._shown(name):
+                        continue
                     els.append(El("div", self.row_attrs(i, name), parent=menu, kind="row", lines=self.row_lines(i, name)))
                 els.append(El("button", {"aria-label": ""}, text=GLYPH_LIST + " New list", parent=menu, kind="new_list"))
         if self.creating:
@@ -620,6 +624,9 @@ class FakePage:
                     El("button", {"aria-label": "Close"}, text="Close", parent=form),
                     El("button", create_attrs, text=create_text, parent=form, kind="create")]
         return self._number(els)
+
+    def _shown(self, name):
+        return not (self._hide and name == self.lag_name)
 
     @staticmethod
     def _number(els):
@@ -642,12 +649,14 @@ class FakePage:
         elif el.kind == "create":
             self.list_names.append(self.new_name)
             self.places.setdefault(self.coords, set()).add(self.new_name)
+            self.lag_name, self.lag_views = self.new_name, self.create_lag
             self.creating = False
             self.dialog_open = False
 
     # --- the Playwright surface the ops use
     def goto(self, url, wait_until=None, timeout=None):
         self.visited.append(url)
+        self._hide, self.lag_views = self.lag_views > 0, max(0, self.lag_views - 1)
         self.url = self.redirect_url or url
         self.dialog_open = False
         self.creating = False
@@ -1362,6 +1371,33 @@ def test_live_save_button_is_data_value_save_or_saved_and_matches_exactly_once(o
     assert len(buttons) == 1
     assert buttons[0].attrs["data-value"] == ("Saved" if on_list else "Save")
     assert ms.add_point(_place_with(on_list), LIST_B, 25.0, 121.5) == "added"      # the click path works too
+
+
+def test_live_save_button_on_two_lists_reads_saved_with_a_count_and_still_matches_once():
+    p = _place_with(True)
+    p.places["25.000000,121.500000"].add(OLD_BIG_LIST)
+    buttons = [e for e in p.elements() if matches(e, S.SAVE_BUTTON)]
+    assert [b.attrs["data-value"] for b in buttons] == ["Saved (2)"]
+    p2 = _place_with(True)
+    p2.places["25.000000,121.500000"].add(OLD_BIG_LIST)
+    assert ms.add_point(p2, LIST_B, 25.0, 121.5) == "added"
+
+
+def test_ensure_waits_for_a_new_list_that_google_shows_only_after_a_delay():
+    p = FakePage()
+    p.create_lag = 2                     # the first two fresh views after Create do not show it yet (seen live)
+    assert ms.ensure_list(p, "New district", 25.0, 121.5) == "created"
+    assert "New district" in p.membership("25.000000,121.500000")
+
+
+def test_ensure_that_never_sees_the_new_list_fails_and_the_next_run_adopts_it():
+    p = FakePage()
+    p.create_lag = 50
+    with pytest.raises(ms.OpFailed, match="not visible"):
+        ms.ensure_list(p, "New district", 25.0, 121.5)
+    p.lag_views = 0
+    assert ms.ensure_list(p, "New district", 25.0, 121.5) == "exists"
+    assert p.list_names.count("New district") == 1          # adopted, never created twice
 
 
 def test_live_save_menu_is_the_role_menu_and_ignores_unrelated_dialogs():
