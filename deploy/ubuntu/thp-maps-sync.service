@@ -1,0 +1,16 @@
+[Unit]
+Description=Sync taiwan-handicapped-parking lists to Google Maps saved lists
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Repo clone location; edit if it is elsewhere.
+WorkingDirectory=%h/taiwan-handicapped-parking
+# Optional: THP_ALERT_CMD=/path/to/notify-script (one line, no quotes). The leading "-" makes the file optional.
+EnvironmentFile=-%h/.config/thp-maps/env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/taiwan-handicapped-parking/deploy/ubuntu/thp-maps-sync.sh
+# Exit 2 = partial run (max-ops reached, rest continues tomorrow): not a failure.
+SuccessExitStatus=2
+TimeoutStartSec=4h

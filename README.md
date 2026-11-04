@@ -13,7 +13,7 @@ Automated system for collecting, managing, and syncing handicapped parking locat
 - **Coordinate Conversion**: Converts TWD97 coordinates to WGS84 and DMS formats using pyproj
 - **Data Validation**: Validates coordinate fields while allowing optional area/road information
 - **Debug Mode**: Saves intermediate data to CSV files for troubleshooting
-- **Google Maps Integration**: Automatically syncs locations to a Google Maps saved list
+- **Google Maps Integration**: Syncs the per-district lists to Google Maps saved lists from a dedicated host with a logged-in Chrome profile (no credentials in the repo or in CI)
 - **GitHub Actions Automation**: Scheduled weekly updates with manual trigger support
 - **Comprehensive Logging**: Detailed logs for data retrieval and Playwright operations
 
@@ -51,7 +51,7 @@ CSV file with columns:
 
 ### Prerequisites
 - Python 3.11+
-- Google account for Maps integration
+- For the Google Maps sync only: a host with Google Chrome and a Chrome profile logged in by hand (see `deploy/ubuntu/README.md`)
 
 ### Installation
 
@@ -64,16 +64,8 @@ cd taiwan-handicapped-parking
 2. Install dependencies:
 ```bash
 pip install -r requirements.txt
-playwright install chromium
 ```
-
-3. Configure environment variables (for local testing):
-```bash
-export GOOGLE_EMAIL="your@email.com"
-export GOOGLE_PASSWORD="yourpassword"  # Or app password if 2FA enabled
-export HEADLESS=false  # Set to true for headless mode
-export RATE_LIMIT_DELAY=3  # Seconds between Google Maps requests
-```
+No Playwright browser download is needed: the Maps sync drives the installed Google Chrome (`channel="chrome"`).
 
 ## Usage
 
@@ -101,48 +93,23 @@ python scripts/main.py plan-sync --out tmp/sync_plan.json   # add/remove plan vs
 - One list per city + district; a district over 500 rows is split into numbered lists (`-1`, `-2`, ...) of at most 500 rows, cut from a stable sort by road, latitude, longitude. Rows are never merged.
 - `data/sync_state.json` records what was last written to Google per list, keyed by point id (`TPE:`/`NTPC:` + lat,lon at 6 decimals; same-coordinate rows get a short road hash). An empty state makes `plan-sync` print the full initial load.
 
-#### 2. Authenticate with Google Maps
+#### 2. Sync the lists to Google Maps (ubuntu host)
 ```bash
-python scripts/main.py authenticate
+python scripts/main.py sync-lists --dry-run                      # counts only, no browser
+python scripts/main.py sync-lists --only "臺北市 中山區" --max-ops 230
+python scripts/main.py sync-lists --count "臺北市 中山區"          # places Google shows vs. the state file
+python scripts/main.py sync-lists                                # daily run: up to --max-ops 300 ops
 ```
-- Opens browser (headless or visible)
-- Logs into Google Maps
-- Saves authentication state for reuse
-
-#### 3. Sync to Google Maps
-```bash
-python scripts/main.py sync-maps
-```
-- Loads parking locations from CSV
-- Creates "Taiwan Handicapped Parking" list if needed
-- Syncs each location to the list
-- Skips locations already saved
-- Respects rate limits to avoid detection
+- Uses a Chrome profile that was logged in by hand (`--profile`, default `~/.config/thp-maps-profile`). The profile is the only credential; no email or password exists anywhere, and the command never fills a login form.
+- Plans add/remove ops per list from `data/lists` against its own state file (`--state`, default `~/.local/state/thp-maps/sync_state.json`, not `data/sync_state.json`), applies them one place at a time with 6-12 s pauses, and writes the state after every verified op, so a stopped run resumes where it ended.
+- Touches only the lists named in `data/lists/index.json`; never deletes a list.
+- One JSON line per op in `sync.log` next to the state file. Exit codes: 0 done / nothing to do, 1 error, 2 partial (ops remain), 3 relogin needed or blocked, 4 three consecutive failures.
+- `authenticate` and `sync-maps` (the old password flow) are retired and exit 1.
+- Install, timer and relogin procedure: `deploy/ubuntu/README.md`.
 
 ### GitHub Actions Automation
 
-The workflow runs automatically:
-- **Schedule**: Every Monday at 9am UTC+8
-- **Manual Trigger**: Via GitHub Actions UI
-
-#### Setup GitHub Secrets
-
-Go to Repository Settings → Secrets → Actions and add:
-- `GOOGLE_EMAIL`: Your Google account email
-- `GOOGLE_PASSWORD`: Your Google account password (or app password)
-
-#### Workflow Process
-1. **Job 1 (collect-and-update)**:
-   - Collects data from all sources
-   - Checks for changes using `git diff`
-   - If changed: commits to temporary branch, merges to main
-   - Outputs: `data_changed` status
-
-2. **Job 2 (sync-google-maps)**:
-   - Runs only if Job 1 detected changes
-   - Restores or creates Google auth state (cached)
-   - Syncs all locations to Google Maps
-   - Uploads logs as artifacts
+The workflow `update_parking_data.yml` runs every Monday at 9am UTC+8 (and on manual trigger). It collects data, rebuilds the per-district lists (`build-lists`; a failure fails the job and commits nothing), checks for changes in the CSV and `data/lists`, and, if anything changed, commits both to a temporary branch and merges to main. It holds no Google secret and does not talk to Google; the Maps sync runs on the ubuntu host.
 
 ## Project Structure
 
@@ -164,10 +131,13 @@ taiwan-handicapped-parking/
 │   │   ├── geocoding.py             # Coordinate conversion
 │   │   ├── csv_validator.py        # Data validation
 │   │   └── logger.py                # Logging utilities
+│   ├── lists/
+│   │   ├── builder.py               # Per-district lists
+│   │   ├── sync_plan.py             # Add/remove plan vs. state
+│   │   └── maps_sync.py             # Google Maps saved-list sync (ubuntu)
 │   └── google_maps/
-│       ├── authenticator.py         # Google auth handler
-│       ├── map_saver.py             # Location sync logic
-│       └── selectors.py             # UI selectors
+│       └── selectors.py             # Every Google Maps selector, in one place
+├── deploy/ubuntu/                   # systemd user timer + install/relogin README
 ├── tests/                           # Test files
 │   ├── test_geocoding.py            # Geocoding tests
 │   └── test_handlers.py             # Handler tests
@@ -306,10 +276,7 @@ The system generates three log files:
   - Cache hits and misses
   - Errors during data processing
 
-- `logs/playwright.log`: Google Maps automation
-  - Authentication steps
-  - Location searches and saves
-  - Rate limiting and progress
+- `logs/playwright.log`: legacy log of the retired password flow (no longer written)
 
 - `logs/app.log`: General application logs
   - Main script execution
@@ -321,12 +288,7 @@ The system generates three log files:
 
 ### Authentication Issues
 
-If Google authentication fails:
-
-1. **Check credentials**: Verify `GOOGLE_EMAIL` and `GOOGLE_PASSWORD` are correct
-2. **Use App Password**: If 2FA is enabled, create an app-specific password
-3. **Clear auth state**: Delete `.github/auth/google_auth_state.json` and re-authenticate
-4. **Check logs**: Review `logs/playwright.log` for detailed error messages
+`sync-lists` exits 3 when the Chrome profile is signed out or Google shows a captcha or consent page. Redo the manual login described in `deploy/ubuntu/README.md` (relogin procedure).
 
 ### Data Collection Fails
 
@@ -345,10 +307,9 @@ If Google authentication fails:
 
 ### Google Maps Sync Issues
 
-1. **Rate limiting**: Increase `RATE_LIMIT_DELAY` if encountering issues
-2. **Selectors changed**: Google may update UI - adjust selectors in `selectors.py`
-3. **Location not found**: Some addresses may not be searchable - check logs for warnings
-4. **Bot detection**: If detected, increase delays and use stealth techniques
+1. **Selectors changed**: Google may update its UI; a failing op logs "... not found (NAME)" in `sync.log`. Fix that constant in `scripts/google_maps/selectors.py`
+2. **Blocked**: exit 3 with reason "blocked" (captcha, "unusual traffic", consent page). Stop for the day and retry later; do not raise the pace
+3. **Count mismatch**: compare `sync-lists --count "<list>"` with the state file; Google may merge two points that resolve to the same place
 
 ## Development
 
@@ -399,11 +360,9 @@ pip install -e .
 python scripts/main.py collect
 ```
 
-4. Test with visible browser:
+4. Preview the Google Maps sync (no browser, writes nothing):
 ```bash
-export HEADLESS=false
-python scripts/main.py authenticate
-python scripts/main.py sync-maps
+python scripts/main.py sync-lists --dry-run --state /tmp/thp_state.json
 ```
 
 ## Contributing

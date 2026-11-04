@@ -15,10 +15,9 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from scripts.data_collection.merger import DataMerger
-from scripts.google_maps.authenticator import GoogleMapsAuthenticator
-from scripts.google_maps.map_saver import GoogleMapsSaver
 from scripts.utils.logger import setup_logger
 from scripts.lists.builder import DEFAULT_MAX_ROWS, build_lists
+from scripts.lists.maps_sync import DEFAULT_MAX_OPS, DEFAULT_PROFILE, DEFAULT_STATE, sync_lists
 from scripts.lists.sync_plan import load_state, make_plan
 from scripts.utils.csv_validator import validate_csv_file
 from scripts.utils.count_guard import (
@@ -161,72 +160,17 @@ def collect_data(
         return 1
 
 
-def authenticate_google():
-    """
-    Authenticate with Google Maps and save authentication state.
-
-    Returns:
-        int: Exit code (0 for success, 1 for failure)
-    """
-    logger.info("=" * 60)
-    logger.info("Starting Google authentication")
-    logger.info("=" * 60)
-
-    try:
-        authenticator = GoogleMapsAuthenticator()
-        authenticator.authenticate()
-
-        logger.info("=" * 60)
-        logger.info("Google authentication complete")
-        logger.info("=" * 60)
-        return 0
-
-    except Exception as e:
-        logger.error("=" * 60)
-        logger.error(f"Google authentication failed: {e}", exc_info=True)
-        logger.error("=" * 60)
-        return 1
+RETIRED_MESSAGE = (
+    "is retired: the password login and the CI Google Maps sync are gone (the repo is public and "
+    "must hold no Google credentials). Use 'sync-lists' on the ubuntu host with a logged-in "
+    "Chrome profile; see deploy/ubuntu/README.md."
+)
 
 
-def sync_to_maps():
-    """
-    Sync parking locations to Google Maps.
-
-    Returns:
-        int: Exit code (0 for success, 1 for failure)
-    """
-    logger.info("=" * 60)
-    logger.info("Starting Google Maps sync")
-    logger.info("=" * 60)
-
-    try:
-        # Load configuration to get CSV file path
-        config = load_config()
-        csv_file = config["output"]["file"]
-
-        # Check if CSV file exists
-        if not Path(csv_file).exists():
-            logger.error(f"CSV file not found: {csv_file}")
-            logger.error("Please run 'collect' command first")
-            return 1
-
-        # Sync to Google Maps
-        saver = GoogleMapsSaver()
-        processed, skipped, errors = saver.sync_locations(csv_file)
-
-        # Determine exit code
-        if errors > 0:
-            logger.warning(f"Sync completed with {errors} errors")
-            return 1
-        else:
-            logger.info("Sync completed successfully")
-            return 0
-
-    except Exception as e:
-        logger.error("=" * 60)
-        logger.error(f"Google Maps sync failed: {e}", exc_info=True)
-        logger.error("=" * 60)
-        return 1
+def retired_command(name: str) -> int:
+    """authenticate / sync-maps used the Google password flow; they now only say so."""
+    print(f"{name} {RETIRED_MESSAGE}", file=sys.stderr)
+    return 1
 
 
 def build_district_lists(config_path, boundaries, lists_dir, max_rows):
@@ -277,35 +221,35 @@ def main():
         int: Exit code
     """
     parser = argparse.ArgumentParser(
+        # no abbreviations: the ubuntu wrapper refuses --state by its full spelling, so --sta must not mean --state
+        allow_abbrev=False,
         description="Taiwan Handicapped Parking Data Management",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
   collect       Collect data from all configured sources and merge
-  authenticate  Authenticate with Google Maps and save session
-  sync-maps     Sync parking locations to Google Maps
+  authenticate  RETIRED (password login removed)
+  sync-maps     RETIRED (use sync-lists)
+  sync-lists    Sync data/lists to Google Maps saved lists via a logged-in Chrome profile (ubuntu)
   build-lists   Assign districts (point-in-polygon) and write data/lists/*.csv
   plan-sync     Print the add/remove plan between data/lists and data/sync_state.json
 
 Examples:
   python scripts/main.py collect
-  python scripts/main.py authenticate
-  python scripts/main.py sync-maps
+  python scripts/main.py sync-lists --dry-run
+  python scripts/main.py sync-lists --only "臺北市 中山區" --max-ops 230
+  python scripts/main.py sync-lists --count "臺北市 中山區"
   python scripts/main.py build-lists
   python scripts/main.py plan-sync --out tmp/sync_plan.json
 
-Environment Variables:
-  GOOGLE_EMAIL      Google account email (for authenticate, sync-maps)
-  GOOGLE_PASSWORD   Google account password (for authenticate, sync-maps)
-  AUTH_STATE_PATH   Path to save auth state (default: .github/auth/google_auth_state.json)
-  HEADLESS          Run browser in headless mode (default: true)
-  RATE_LIMIT_DELAY  Delay between requests in seconds (default: 3)
+sync-lists exit codes: 0 done / nothing to do, 1 error, 2 partial (ops remain),
+  3 relogin needed or blocked, 4 three consecutive failures.
         """,
     )
 
     parser.add_argument(
         "command",
-        choices=["collect", "authenticate", "sync-maps", "build-lists", "plan-sync"],
+        choices=["collect", "authenticate", "sync-maps", "sync-lists", "build-lists", "plan-sync"],
         help="Command to execute",
     )
 
@@ -343,9 +287,25 @@ Environment Variables:
                         help="build-lists / plan-sync: directory of per-district lists")
     parser.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS,
                         help="build-lists: max rows per list (default %(default)s)")
-    parser.add_argument("--state", default="data/sync_state.json",
-                        help="plan-sync: what was last written to Google")
+    parser.add_argument("--state", default=None,
+                        help="plan-sync: what was last written to Google (default data/sync_state.json); "
+                        f"sync-lists: its own state file (default {DEFAULT_STATE}, never the repo file)")
     parser.add_argument("--out", default=None, help="plan-sync: also write the full plan as JSON here")
+
+    parser.add_argument("--profile", default=DEFAULT_PROFILE,
+                        help="sync-lists: logged-in Chrome user-data-dir (default %(default)s)")
+    parser.add_argument("--only", action="append", default=None, metavar="LIST",
+                        help="sync-lists: only this list name (repeatable)")
+    parser.add_argument("--max-ops", type=int, default=DEFAULT_MAX_OPS,
+                        help="sync-lists: stop after this many add/remove ops (default %(default)s)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="sync-lists: print the plan counts, start no browser, write nothing")
+    parser.add_argument("--headed", action=argparse.BooleanOptionalAction, default=True,
+                        help="sync-lists: show the browser window (default; run under xvfb-run)")
+    parser.add_argument("--run-id", default=None,
+                        help="sync-lists: id written on every sync.log line (the wrapper script passes its own)")
+    parser.add_argument("--count", default=None, metavar="LIST",
+                        help="sync-lists: print how many places Google shows for this list (no writes)")
 
     args = parser.parse_args()
 
@@ -358,14 +318,24 @@ Environment Variables:
                 max_growth_pct=args.max_growth_pct,
                 accept_count_change=args.accept_count_change,
             )
-        elif args.command == "authenticate":
-            exit_code = authenticate_google()
         elif args.command == "build-lists":
             exit_code = build_district_lists(args.config, args.boundaries, args.lists_dir, args.max_rows)
         elif args.command == "plan-sync":
-            exit_code = plan_sync(args.lists_dir, args.state, args.out)
-        elif args.command == "sync-maps":
-            exit_code = sync_to_maps()
+            exit_code = plan_sync(args.lists_dir, args.state or "data/sync_state.json", args.out)
+        elif args.command == "sync-lists":
+            exit_code = sync_lists(
+                lists_dir=args.lists_dir,
+                state=args.state or DEFAULT_STATE,
+                profile=args.profile,
+                only=args.only,
+                max_ops=args.max_ops,
+                dry_run=args.dry_run,
+                headed=args.headed,
+                count=args.count,
+                run_id=args.run_id,
+            )
+        elif args.command in ("sync-maps", "authenticate"):
+            exit_code = retired_command(args.command)
         else:
             logger.error(f"Unknown command: {args.command}")
             exit_code = 1
