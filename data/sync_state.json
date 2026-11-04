@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "note": "What was last written to Google Maps, per list, keyed by point_id: lists -> <list name> -> points -> <point_id> -> {lat, lon, road, payload_hash}. payload_hash comes from the plan's add entries. Empty = nothing written yet. Only the Google sync job may update this file, after a successful write.",
+  "lists": {}
+}

@@ -9,11 +9,14 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   DATA_FILE: 'data/parking_locations.csv'
+  LISTS_DIR: 'data/lists'
   BRANCH_PREFIX: 'update-parking-data'
 
 jobs:
   collect-and-update:
     runs-on: ubuntu-latest
+    # Whole job: install + collect (<= 20 min, see step) + build-lists + diff/commit/push + log upload.
+    timeout-minutes: 30
     outputs:
       data_changed: ${{ steps.check_diff.outputs.changed }}
       commit_sha: ${{ steps.commit_changes.outputs.commit_sha }}
@@ -46,10 +49,21 @@ jobs:
 
       - name: Download and process data
         id: process_data
+        # The New Taipei crawl stops itself after 10 min (crawl_deadline_seconds) and a healthy
+        # run takes well under 2 min. This step limit only backs that up and, being below the job
+        # limit, leaves 10 min for the always() cache/log steps and the commit steps.
+        timeout-minutes: 20
         run: |
           python scripts/main.py collect
         env:
           LOG_LEVEL: INFO
+
+      # Regenerate the per-district lists (data/lists, which the ubuntu Maps sync reads) from the
+      # CSV just collected. No continue-on-error: if this fails the job fails and nothing is committed.
+      - name: Build district lists
+        id: build_lists
+        run: |
+          python scripts/main.py build-lists
 
       - name: Save data cache
         if: always()
@@ -61,16 +75,18 @@ jobs:
       - name: Check for changes
         id: check_diff
         run: |
-          if git diff --quiet ${{ env.DATA_FILE }}; then
+          # --porcelain also reports new, deleted and untracked files under data/lists
+          CHANGES="$(git status --porcelain -- ${{ env.DATA_FILE }} ${{ env.LISTS_DIR }})"
+          if [ -z "$CHANGES" ]; then
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "No changes detected in parking data"
+            echo "No changes detected in parking data or lists"
           else
             echo "changed=true" >> $GITHUB_OUTPUT
-            echo "Changes detected in parking data"
-            git diff --stat ${{ env.DATA_FILE }}
+            echo "Changes detected in parking data or lists"
+            echo "$CHANGES"
             echo "### Changes Detected" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            git diff --stat ${{ env.DATA_FILE }} >> $GITHUB_STEP_SUMMARY
+            echo "$CHANGES" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
@@ -85,7 +101,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git checkout -b "$BRANCH_NAME"
-          git add ${{ env.DATA_FILE }}
+          git add -A ${{ env.DATA_FILE }} ${{ env.LISTS_DIR }}
           git commit -m "$(cat <<'EOF'
           chore: update parking data - $TIMESTAMP
 
@@ -117,78 +133,3 @@ jobs:
           name: data-collection-logs
           path: logs/
           retention-days: 30
-
-  sync-google-maps:
-    runs-on: ubuntu-latest
-    needs: collect-and-update
-    if: needs.collect-and-update.outputs.data_changed == 'true' || github.event_name == 'workflow_dispatch'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.collect-and-update.outputs.commit_sha }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-
-      - name: Install dependencies with Playwright
-        run: |
-          pip install -r requirements.txt
-          playwright install chromium
-          playwright install-deps chromium
-
-      - name: Restore Google auth state
-        id: restore_auth
-        uses: actions/cache/restore@v4
-        with:
-          path: .github/auth/google_auth_state.json
-          key: google-maps-auth-${{ github.repository }}
-
-      - name: Authenticate Google Maps
-        if: steps.restore_auth.outputs.cache-hit != 'true'
-        run: |
-          python scripts/main.py authenticate
-        env:
-          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
-          GOOGLE_PASSWORD: ${{ secrets.GOOGLE_PASSWORD }}
-          AUTH_STATE_PATH: .github/auth/google_auth_state.json
-          HEADLESS: true
-
-      - name: Save Google auth state
-        if: steps.restore_auth.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .github/auth/google_auth_state.json
-          key: google-maps-auth-${{ github.repository }}
-
-      - name: Sync locations to Google Maps
-        run: |
-          python scripts/main.py sync-maps
-        env:
-          AUTH_STATE_PATH: .github/auth/google_auth_state.json
-          DATA_FILE: ${{ env.DATA_FILE }}
-          HEADLESS: true
-          RATE_LIMIT_DELAY: 3
-        timeout-minutes: 120  # 2 hour timeout for large datasets
-
-      - name: Upload sync logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: google-maps-sync-logs
-          path: logs/
-          retention-days: 30
-
-      - name: Sync summary
-        if: always()
-        run: |
-          echo "### Google Maps Sync Complete" >> $GITHUB_STEP_SUMMARY
-          if [ -f "logs/playwright.log" ]; then
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 20 logs/playwright.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
