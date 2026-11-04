@@ -40,7 +40,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -138,6 +138,16 @@ def _desired_place_keys(lists_dir: str, entry: Dict[str, Any]) -> Dict[str, str]
     """point_id -> place key for every row of one list file."""
     df = pd.read_csv(Path(lists_dir) / entry["file"], encoding="utf-8-sig", keep_default_na=False, dtype=str)
     return {r["point_id"]: place_key(r["dd_lat"], r["dd_long"]) for r in df.to_dict("records")}
+
+
+def first_desired_point(lists_dir: str, name: str) -> Optional[Tuple[float, float]]:
+    """(lat, lon) of the first row of one list's file, or None when the list has no points."""
+    entry = next(e for e in load_index(lists_dir) if e["list"] == name)
+    df = pd.read_csv(Path(lists_dir) / entry["file"], encoding="utf-8-sig", keep_default_na=False, dtype=str)
+    if df.empty:
+        return None
+    row = df.iloc[0]
+    return float(row["dd_lat"]), float(row["dd_long"])
 
 
 def build_tasks(lists_dir: str, state: Dict[str, Any], only: Optional[Iterable[str]] = None) -> Dict[str, Any]:
@@ -455,27 +465,19 @@ def parse_place_count(text: str) -> Optional[int]:
     return int(m.group(1).replace(",", "")) if m else None
 
 
-def count_list(page, name: str) -> int:
-    """Open the Saved tab and read the place count Google shows for our list (no writes)."""
-    page.goto(S.HOME_URL, wait_until="domcontentloaded")
-    _poll(page, lambda: _count(page, S.ACCOUNT_BUTTON), 15000)
-    check_blocked(page)
-    if _count(page, S.SAVED_NAV):
-        _one(page, page.locator(S.SAVED_NAV), "saved tab button", "SAVED_NAV").click(timeout=10000)
-    else:
-        if not _count(page, S.MENU_BUTTON):
-            _fail(page, "no way to the Saved tab (SAVED_NAV, MENU_BUTTON)")
-        _one(page, page.locator(S.MENU_BUTTON), "menu button", "MENU_BUTTON").click(timeout=10000)
-        if not _poll(page, lambda: _count(page, S.MENU_SAVED_ITEM), 5000):
-            _fail(page, "menu has no Saved item (MENU_SAVED_ITEM)")
-        _one(page, page.locator(S.MENU_SAVED_ITEM), "menu Saved item", "MENU_SAVED_ITEM").click(timeout=10000)
-    row_re = re.compile(rf"^\s*{re.escape(name)}\s*$", re.MULTILINE)
-    rows = page.locator(S.SAVED_LIST_ROW, has_text=row_re)
-    if not _poll(page, lambda: rows.count(), 10000):
-        _fail(page, f"list '{name}' not found in the Saved tab (SAVED_LIST_ROW)")
-    n = parse_place_count(_one(page, rows, f"Saved tab row for '{name}'", "SAVED_LIST_ROW").inner_text())
-    if n is None:
-        _fail(page, f"no place count in the row for '{name}'")
+def count_list(page, name: str, lat: float, lon: float) -> int:
+    """
+    Read the place count Google shows for our list. The Save menu of any place page already carries
+    it ("Private · 220 places" in the list's row), so this opens that menu, reads the one row and
+    closes the menu. It ticks nothing and writes nothing.
+    """
+    _open_save_dialog(page, lat, lon)
+    try:
+        n = parse_place_count(_require_list_item(page, name).inner_text())
+        if n is None:
+            _fail(page, f"no place count in the row for '{name}' (LIST_ITEM)")
+    finally:
+        _close_dialog(page)
     return n
 
 
@@ -515,8 +517,8 @@ class PageOps:
     def remove(self, task: Task) -> str:
         return self._guarded(remove_point, task.list, task.point["lat"], task.point["lon"])
 
-    def count(self, name: str) -> int:
-        return self._guarded(count_list, name)
+    def count(self, name: str, lat: float, lon: float) -> int:
+        return self._guarded(count_list, name, lat, lon)
 
     def failure_screenshot(self, path: Path) -> None:
         with contextlib.suppress(Exception):
@@ -787,13 +789,16 @@ def state_counts(state: Dict[str, Any], name: str) -> Dict[str, int]:
 def _count_cmd(lists_dir: str, state_path: Path, name: str, factory, log: RunLog) -> int:
     if name not in load_index_names(lists_dir):
         raise ValueError(f"not a list in {lists_dir}/index.json: {name!r}")
+    first = first_desired_point(lists_dir, name)
+    if first is None:
+        raise ValueError(f"list {name!r} has no points in {lists_dir}, so there is no place page to read its count from")
     mine = state_counts(load_state(str(state_path)), name)
     log.event(event="start", op="count", list=name, state=str(state_path), **{f"state_{k}": v for k, v in mine.items()})
     with factory() as ops:
         t0 = time.monotonic()
         try:
             ops.check_session()
-            shown = ops.count(name)
+            shown = ops.count(name, *first)
         except SyncError as e:
             ms_ = int((time.monotonic() - t0) * 1000)
             if isinstance(e, (Blocked, ReloginNeeded)):

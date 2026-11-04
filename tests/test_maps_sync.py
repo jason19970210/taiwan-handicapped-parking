@@ -559,11 +559,13 @@ class FakePage:
 
     # --- the DOM
     def row_lines(self, i, name):
+        n = sum(1 for lists in self.places.values() if name in lists)      # places on this list, as Google counts
+        count = f"{'Shared' if i % 3 == 0 else 'Private'} · {n} place{'s' if n != 1 else ''}"
         if i % 3 == 0:
-            return ["", "", name, "Shared · 2,538 places"]
+            return ["", "", name, count]
         if i % 3 == 1:
-            return [name, "Private · 2,278 places"]
-        return [GLYPH_TICK if name in self.membership(self.coords) else GLYPH_LIST, name, "Private · 760 places"]
+            return [name, count]
+        return [GLYPH_TICK if name in self.membership(self.coords) else GLYPH_LIST, name, count]
 
     def row_attrs(self, i, name):
         attrs = {"role": self.row_role, "data-index": str(i), "jsaction": "actionmenu.select"}
@@ -804,7 +806,7 @@ def test_count_command_prints_google_and_state_numbers_and_writes_nothing(tmp_pa
     before = sp.read_text(encoding="utf-8")
 
     class CountOps(FakeOps):
-        def count(self, name):
+        def count(self, name, lat, lon):
             return 2
 
     code = ms.sync_lists(lists_dir=d, state=str(sp), count=LIST_A, ops_factory=factory(CountOps()))
@@ -812,6 +814,34 @@ def test_count_command_prints_google_and_state_numbers_and_writes_nothing(tmp_pa
     assert code == 0
     assert "google shows: 2 places" in out and "state has:    3 places (3 points)" in out
     assert sp.read_text(encoding="utf-8") == before
+
+
+def test_count_reads_the_place_count_from_the_save_menu_row():
+    page = FakePage()
+    for lat in (25.0, 25.001, 25.002):
+        ms.add_point(page, LIST_A, lat, 121.5)
+    assert ms.count_list(page, LIST_A, 25.0, 121.5) == 3
+    assert not page.dialog_open                                   # the menu is closed again
+    assert sum(LIST_A in v for v in page.places.values()) == 3     # nothing ticked or unticked
+
+
+def test_count_passes_the_first_point_of_the_list_to_the_ops(tmp_path):
+    d = make_lists(tmp_path, {LIST_A: [(25.5, 121.25, "first"), (25.9, 121.9, "second")]})
+    seen = []
+
+    class CountOps(FakeOps):
+        def count(self, name, lat, lon):
+            seen.append((name, lat, lon))
+            return 2
+
+    assert ms.sync_lists(lists_dir=d, state=str(tmp_path / "s.json"), count=LIST_A, ops_factory=factory(CountOps())) == 0
+    assert seen == [(LIST_A, 25.5, 121.25)]
+
+
+def test_count_of_a_list_without_points_is_exit_1_and_opens_no_browser(tmp_path, capsys):
+    d = make_lists(tmp_path, {LIST_A: []})
+    assert ms.sync_lists(lists_dir=d, state=str(tmp_path / "s.json"), count=LIST_A, ops_factory=never_factory) == 1
+    assert "no points" in capsys.readouterr().err
 
 
 def test_count_signed_out_exits_3(tmp_path):
@@ -1148,16 +1178,15 @@ def test_p6_consent_page_after_new_list_click_exits_3_not_a_selector_failure(tmp
 
 
 def test_p6_ops_themselves_check_the_page_before_reporting_a_missing_control():
-    # without the PageOps wrapper: ensure_list after "New list", and the Saved tab in count_list
+    # without the PageOps wrapper: ensure_list after "New list", and the Save button in count_list
     page = FakePage(lists=[OLD_BIG_LIST])
     page.new_list_goes_to = "https://consent.google.com/m?continue=x"
     with pytest.raises(ms.Blocked):
         ms.ensure_list(page, LIST_A, 25.0, 121.5)
     page2 = FakePage()
-    page2.extra_counts = {S.SAVED_NAV: 1}
-    page2.click_to = {S.SAVED_NAV: "https://accounts.google.com/v3/signin/identifier"}
+    page2.click_to = {S.SAVE_BUTTON: "https://accounts.google.com/v3/signin/identifier"}
     with pytest.raises(ms.ReloginNeeded):
-        ms.count_list(page2, LIST_A)
+        ms.count_list(page2, LIST_A, 25.0, 121.5)
 
 
 def test_p6_browser_error_on_a_sign_in_page_exits_3(tmp_path):
@@ -1182,17 +1211,16 @@ def test_p6_playwright_error_on_a_normal_page_is_still_an_op_failure(tmp_path):
 def test_p6_count_path_consent_page_exits_3(tmp_path):
     d = make_lists(tmp_path, {LIST_A: pts(1)})
     page = FakePage()
-    page.extra_counts = {S.SAVED_NAV: 1}
-    page.click_to = {S.SAVED_NAV: "https://consent.google.com/m?continue=x"}
+    page.click_to = {S.SAVE_BUTTON: "https://consent.google.com/m?continue=x"}
     code = ms.sync_lists(lists_dir=d, state=str(tmp_path / "s.json"), count=LIST_A,
                          ops_factory=factory(ms.PageOps(page)))
     assert code == 3
 
 
-def test_p6_count_path_with_a_missing_tab_on_a_normal_page_is_exit_1(tmp_path):
+def test_p6_count_path_with_a_missing_list_row_on_a_normal_page_is_exit_1(tmp_path):
     d = make_lists(tmp_path, {LIST_A: pts(1)})
     code = ms.sync_lists(lists_dir=d, state=str(tmp_path / "s.json"), count=LIST_A,
-                         ops_factory=factory(ms.PageOps(FakePage())))
+                         ops_factory=factory(ms.PageOps(FakePage(lists=[OLD_BIG_LIST]))))
     assert code == 1
 
 

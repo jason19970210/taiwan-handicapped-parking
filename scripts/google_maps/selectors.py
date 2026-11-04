@@ -74,13 +74,6 @@ class GoogleMapsSelectors:
     LIST_NAME_INPUT = 'input[type="text"]'   # looked up inside the Create dialog locator, so no dialog prefix
     CREATE_LIST_CONFIRM = 'button[data-value="Create"], button[aria-label="Create"], button[aria-label="建立"]'
 
-    # ---- saved-lists view (used only by --count) ---------------------------
-    SAVED_NAV = 'button[aria-label="Saved"], button[aria-label="已儲存"]'
-    MENU_BUTTON = 'button[aria-label="Menu"], button[aria-label="選單"]'
-    MENU_SAVED_ITEM = 'button:has-text("Saved"), a:has-text("Saved"), button:has-text("已儲存")'
-    # one row per list in the Saved tab; matched by exact name line, see maps_sync.count_list
-    SAVED_LIST_ROW = "button"
-
     @staticmethod
     def place_url(lat: float, lon: float) -> str:
         return GoogleMapsSelectors.PLACE_URL.format(lat=f"{float(lat):.6f}", lon=f"{float(lon):.6f}")

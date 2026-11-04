@@ -62,7 +62,8 @@ xvfb-run -a -s "-screen 0 1440x900x24" .venv/bin/python scripts/main.py sync-lis
 xvfb-run -a .venv/bin/python scripts/main.py sync-lists --count "臺北市 中山區"
 ```
 
-`--count` prints the number of places Google shows for the list next to the number of **places** in the
+`--count` opens the Save menu of the list's first place and reads the count Google shows in the list's
+row ("Private · 220 places"); it ticks nothing. It prints that number next to the number of **places** in the
 state file (and the number of ids). Ids that share one lat/lon are one Google place, so compare with
 places, not ids. A Google number below the places number means two different coordinates resolved to
 the same Google place.
