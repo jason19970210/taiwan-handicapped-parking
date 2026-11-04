@@ -1,0 +1,199 @@
+{
+  "area_mismatch": [
+    {
+      "border_m": 77.6,
+      "city": "New Taipei City",
+      "dd_lat": "24.944667",
+      "dd_long": "121.38055",
+      "district": "樹林區",
+      "point_id": "NTPC:24.944667,121.380550",
+      "road": "大雅路",
+      "source_area": "三峽區"
+    },
+    {
+      "border_m": 148.9,
+      "city": "New Taipei City",
+      "dd_lat": "24.945347",
+      "dd_long": "121.380433",
+      "district": "樹林區",
+      "point_id": "NTPC:24.945347,121.380433",
+      "road": "大雅路",
+      "source_area": "三峽區"
+    },
+    {
+      "border_m": 190.3,
+      "city": "New Taipei City",
+      "dd_lat": "24.945799",
+      "dd_long": "121.380537",
+      "district": "樹林區",
+      "point_id": "NTPC:24.945799,121.380537",
+      "road": "學成路",
+      "source_area": "三峽區"
+    },
+    {
+      "border_m": 36.7,
+      "city": "New Taipei City",
+      "dd_lat": "24.944853",
+      "dd_long": "121.378829",
+      "district": "樹林區",
+      "point_id": "NTPC:24.944853,121.378829",
+      "road": "學成路",
+      "source_area": "三峽區"
+    },
+    {
+      "border_m": 397.0,
+      "city": "New Taipei City",
+      "dd_lat": "25.017662",
+      "dd_long": "121.427507",
+      "district": "新莊區",
+      "point_id": "NTPC:25.017662,121.427507#19ffc6",
+      "road": "安康計程車停車場",
+      "source_area": "新店區"
+    },
+    {
+      "border_m": 518.7,
+      "city": "New Taipei City",
+      "dd_lat": "25.005106",
+      "dd_long": "121.462036",
+      "district": "板橋區",
+      "point_id": "NTPC:25.005106,121.462036#19ffc6",
+      "road": "安康計程車停車場",
+      "source_area": "新店區"
+    },
+    {
+      "border_m": 397.0,
+      "city": "New Taipei City",
+      "dd_lat": "25.017662",
+      "dd_long": "121.427507",
+      "district": "新莊區",
+      "point_id": "NTPC:25.017662,121.427507#d65cc4",
+      "road": "篤行路二段",
+      "source_area": "板橋區"
+    },
+    {
+      "border_m": 26.2,
+      "city": "New Taipei City",
+      "dd_lat": "24.94737",
+      "dd_long": "121.371798",
+      "district": "三峽區",
+      "point_id": "NTPC:24.947370,121.371798",
+      "road": "大學路",
+      "source_area": "樹林區"
+    },
+    {
+      "border_m": 16.7,
+      "city": "New Taipei City",
+      "dd_lat": "24.94861",
+      "dd_long": "121.376395",
+      "district": "三峽區",
+      "point_id": "NTPC:24.948610,121.376395",
+      "road": "大義路",
+      "source_area": "樹林區"
+    },
+    {
+      "border_m": 18.9,
+      "city": "New Taipei City",
+      "dd_lat": "24.945893",
+      "dd_long": "121.377695",
+      "district": "三峽區",
+      "point_id": "NTPC:24.945893,121.377695",
+      "road": "大義路",
+      "source_area": "樹林區"
+    },
+    {
+      "border_m": 42.8,
+      "city": "New Taipei City",
+      "dd_lat": "24.947153",
+      "dd_long": "121.376824",
+      "district": "三峽區",
+      "point_id": "NTPC:24.947153,121.376824",
+      "road": "學勤路",
+      "source_area": "樹林區"
+    },
+    {
+      "border_m": 397.0,
+      "city": "New Taipei City",
+      "dd_lat": "25.017662",
+      "dd_long": "121.427507",
+      "district": "新莊區",
+      "point_id": "NTPC:25.017662,121.427507#5f07c1",
+      "road": "民族路408巷",
+      "source_area": "蘆洲區"
+    },
+    {
+      "border_m": 518.7,
+      "city": "New Taipei City",
+      "dd_lat": "25.005106",
+      "dd_long": "121.462036",
+      "district": "板橋區",
+      "point_id": "NTPC:25.005106,121.462036#5f07c1",
+      "road": "民族路408巷",
+      "source_area": "蘆洲區"
+    },
+    {
+      "border_m": 1894.3,
+      "city": "New Taipei City",
+      "dd_lat": "24.947288",
+      "dd_long": "121.490293",
+      "district": "新店區",
+      "point_id": "NTPC:24.947288,121.490293#5f07c1",
+      "road": "民族路408巷",
+      "source_area": "蘆洲區"
+    },
+    {
+      "border_m": 397.0,
+      "city": "New Taipei City",
+      "dd_lat": "25.017662",
+      "dd_long": "121.427507",
+      "district": "新莊區",
+      "point_id": "NTPC:25.017662,121.427507#228725",
+      "road": "水湳街",
+      "source_area": "蘆洲區"
+    },
+    {
+      "border_m": 4.8,
+      "city": "Taipei City",
+      "dd_lat": "25.04815790062879",
+      "dd_long": "121.58004542565922",
+      "district": "南港區",
+      "point_id": "TPE:25.048158,121.580045",
+      "road": "中坡北路",
+      "source_area": "信義區"
+    },
+    {
+      "border_m": 1.9,
+      "city": "Taipei City",
+      "dd_lat": "25.04811080623396",
+      "dd_long": "121.58005253330306",
+      "district": "南港區",
+      "point_id": "TPE:25.048111,121.580053",
+      "road": "中坡北路",
+      "source_area": "信義區"
+    },
+    {
+      "border_m": 5.8,
+      "city": "Taipei City",
+      "dd_lat": "25.047616116932943",
+      "dd_long": "121.56353367860238",
+      "district": "松山區",
+      "point_id": "TPE:25.047616,121.563534",
+      "road": "市民大道5段",
+      "source_area": "信義區"
+    }
+  ],
+  "city_mismatch": [],
+  "counts": {
+    "area_mismatch_by_city": {
+      "New Taipei City": 15,
+      "Taipei City": 3
+    },
+    "city_mismatch": 0,
+    "outside_polygon": 0,
+    "rows": 2609,
+    "rows_with_source_area_by_city": {
+      "New Taipei City": 914,
+      "Taipei City": 1695
+    }
+  },
+  "outside_polygon": []
+}

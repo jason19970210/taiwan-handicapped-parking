@@ -1,0 +1,277 @@
+{
+  "max_rows_per_list": 500,
+  "total_rows": 2609,
+  "source_csv": "data/parking_locations.csv",
+  "boundary_source": {
+    "source_dataset": "鄉鎮市區界線(TWD97經緯度), data.gov.tw dataset 7441, provider 國土測繪中心 (MOI/NLSC)",
+    "source_url": "https://www.tgos.tw/tgos/VirtualDir/Product/3fe61d4a-ca23-4f45-8aca-4a536f40f290/鄉(鎮、市、區)界線1140318.zip",
+    "source_version": "1140318 (ROC 114-03-18, i.e. 2025-03-18)",
+    "downloaded": "2026-11-04"
+  },
+  "lists": [
+    {
+      "list": "臺北市 中山區",
+      "file": "臺北市_中山區.csv",
+      "city": "Taipei City",
+      "district": "中山區",
+      "part": null,
+      "rows": 220
+    },
+    {
+      "list": "臺北市 中正區",
+      "file": "臺北市_中正區.csv",
+      "city": "Taipei City",
+      "district": "中正區",
+      "part": null,
+      "rows": 136
+    },
+    {
+      "list": "臺北市 信義區",
+      "file": "臺北市_信義區.csv",
+      "city": "Taipei City",
+      "district": "信義區",
+      "part": null,
+      "rows": 89
+    },
+    {
+      "list": "臺北市 內湖區",
+      "file": "臺北市_內湖區.csv",
+      "city": "Taipei City",
+      "district": "內湖區",
+      "part": null,
+      "rows": 144
+    },
+    {
+      "list": "臺北市 北投區",
+      "file": "臺北市_北投區.csv",
+      "city": "Taipei City",
+      "district": "北投區",
+      "part": null,
+      "rows": 105
+    },
+    {
+      "list": "臺北市 南港區",
+      "file": "臺北市_南港區.csv",
+      "city": "Taipei City",
+      "district": "南港區",
+      "part": null,
+      "rows": 116
+    },
+    {
+      "list": "臺北市 士林區",
+      "file": "臺北市_士林區.csv",
+      "city": "Taipei City",
+      "district": "士林區",
+      "part": null,
+      "rows": 163
+    },
+    {
+      "list": "臺北市 大同區",
+      "file": "臺北市_大同區.csv",
+      "city": "Taipei City",
+      "district": "大同區",
+      "part": null,
+      "rows": 90
+    },
+    {
+      "list": "臺北市 大安區",
+      "file": "臺北市_大安區.csv",
+      "city": "Taipei City",
+      "district": "大安區",
+      "part": null,
+      "rows": 148
+    },
+    {
+      "list": "臺北市 文山區",
+      "file": "臺北市_文山區.csv",
+      "city": "Taipei City",
+      "district": "文山區",
+      "part": null,
+      "rows": 184
+    },
+    {
+      "list": "臺北市 松山區",
+      "file": "臺北市_松山區.csv",
+      "city": "Taipei City",
+      "district": "松山區",
+      "part": null,
+      "rows": 161
+    },
+    {
+      "list": "臺北市 萬華區",
+      "file": "臺北市_萬華區.csv",
+      "city": "Taipei City",
+      "district": "萬華區",
+      "part": null,
+      "rows": 139
+    },
+    {
+      "list": "新北市 三峽區",
+      "file": "新北市_三峽區.csv",
+      "city": "New Taipei City",
+      "district": "三峽區",
+      "part": null,
+      "rows": 32
+    },
+    {
+      "list": "新北市 三重區",
+      "file": "新北市_三重區.csv",
+      "city": "New Taipei City",
+      "district": "三重區",
+      "part": null,
+      "rows": 97
+    },
+    {
+      "list": "新北市 中和區",
+      "file": "新北市_中和區.csv",
+      "city": "New Taipei City",
+      "district": "中和區",
+      "part": null,
+      "rows": 57
+    },
+    {
+      "list": "新北市 五股區",
+      "file": "新北市_五股區.csv",
+      "city": "New Taipei City",
+      "district": "五股區",
+      "part": null,
+      "rows": 24
+    },
+    {
+      "list": "新北市 八里區",
+      "file": "新北市_八里區.csv",
+      "city": "New Taipei City",
+      "district": "八里區",
+      "part": null,
+      "rows": 9
+    },
+    {
+      "list": "新北市 土城區",
+      "file": "新北市_土城區.csv",
+      "city": "New Taipei City",
+      "district": "土城區",
+      "part": null,
+      "rows": 57
+    },
+    {
+      "list": "新北市 坪林區",
+      "file": "新北市_坪林區.csv",
+      "city": "New Taipei City",
+      "district": "坪林區",
+      "part": null,
+      "rows": 2
+    },
+    {
+      "list": "新北市 新店區",
+      "file": "新北市_新店區.csv",
+      "city": "New Taipei City",
+      "district": "新店區",
+      "part": null,
+      "rows": 87
+    },
+    {
+      "list": "新北市 新莊區",
+      "file": "新北市_新莊區.csv",
+      "city": "New Taipei City",
+      "district": "新莊區",
+      "part": null,
+      "rows": 90
+    },
+    {
+      "list": "新北市 板橋區",
+      "file": "新北市_板橋區.csv",
+      "city": "New Taipei City",
+      "district": "板橋區",
+      "part": null,
+      "rows": 76
+    },
+    {
+      "list": "新北市 林口區",
+      "file": "新北市_林口區.csv",
+      "city": "New Taipei City",
+      "district": "林口區",
+      "part": null,
+      "rows": 91
+    },
+    {
+      "list": "新北市 樹林區",
+      "file": "新北市_樹林區.csv",
+      "city": "New Taipei City",
+      "district": "樹林區",
+      "part": null,
+      "rows": 70
+    },
+    {
+      "list": "新北市 永和區",
+      "file": "新北市_永和區.csv",
+      "city": "New Taipei City",
+      "district": "永和區",
+      "part": null,
+      "rows": 32
+    },
+    {
+      "list": "新北市 汐止區",
+      "file": "新北市_汐止區.csv",
+      "city": "New Taipei City",
+      "district": "汐止區",
+      "part": null,
+      "rows": 59
+    },
+    {
+      "list": "新北市 泰山區",
+      "file": "新北市_泰山區.csv",
+      "city": "New Taipei City",
+      "district": "泰山區",
+      "part": null,
+      "rows": 11
+    },
+    {
+      "list": "新北市 淡水區",
+      "file": "新北市_淡水區.csv",
+      "city": "New Taipei City",
+      "district": "淡水區",
+      "part": null,
+      "rows": 33
+    },
+    {
+      "list": "新北市 深坑區",
+      "file": "新北市_深坑區.csv",
+      "city": "New Taipei City",
+      "district": "深坑區",
+      "part": null,
+      "rows": 8
+    },
+    {
+      "list": "新北市 石碇區",
+      "file": "新北市_石碇區.csv",
+      "city": "New Taipei City",
+      "district": "石碇區",
+      "part": null,
+      "rows": 3
+    },
+    {
+      "list": "新北市 蘆洲區",
+      "file": "新北市_蘆洲區.csv",
+      "city": "New Taipei City",
+      "district": "蘆洲區",
+      "part": null,
+      "rows": 50
+    },
+    {
+      "list": "新北市 金山區",
+      "file": "新北市_金山區.csv",
+      "city": "New Taipei City",
+      "district": "金山區",
+      "part": null,
+      "rows": 1
+    },
+    {
+      "list": "新北市 鶯歌區",
+      "file": "新北市_鶯歌區.csv",
+      "city": "New Taipei City",
+      "district": "鶯歌區",
+      "part": null,
+      "rows": 25
+    }
+  ]
+}
