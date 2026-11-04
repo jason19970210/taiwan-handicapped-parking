@@ -385,94 +385,114 @@ def test_one_json_line_per_op_with_the_required_fields(tmp_path):
 
 
 # ---- ops over a fake page ---------------------------------------------------------------------
+# The fake page mirrors the structure probed on the live site (English UI, hl=en): the Save button is
+# button[data-value="Save"|"Saved"]; it opens ONE div[role=menu] whose rows are div[role=menuitemradio]
+# with aria-checked, icon-glyph lines, the name and a "Private/Shared · N places" line, plus a " New list"
+# button; New list opens a role=dialog form with an unlabelled text input and button[data-value=Create].
+# Selectors are matched for real (tag, [attr=v], [attr^=v], [attr*=v], :has-text, "[role=dialog] " ancestor),
+# so a test fails when the constant in selectors.py no longer fits this structure.
+GLYPH_TICK = ""
+GLYPH_LIST = ""
+
+
+class El:
+    def __init__(self, tag, attrs=None, text="", parent=None, kind=None, lines=None):
+        self.tag, self.attrs, self.parent, self.kind = tag, dict(attrs or {}), parent, kind
+        self.lines = list(lines) if lines is not None else None
+        self.text = text
+        self.uid = None
+
+    def inner(self):
+        return "\n".join(self.lines) if self.lines is not None else self.text
+
+    def ancestors(self):
+        e = self.parent
+        while e is not None:
+            yield e
+            e = e.parent
+
+
+_ATTR = re.compile(r'\[([\w-]+)(\^=|\*=|=)"([^"]*)"\]')
+_HAS_TEXT = re.compile(r':has-text\("([^"]*)"\)')
+_CLAUSE = re.compile(r'^(?:\[role="dialog"\] )?([a-z]*)(?:#([\w-]+))?((?:\[[^\]]+\]|:has-text\("[^"]*"\))*)$')
+
+
+def _clause_matches(el, clause):
+    m = _CLAUSE.match(clause)
+    assert m, f"fake cannot parse selector clause: {clause!r}"
+    tag, ident, rest = m.groups()
+    if clause.startswith('[role="dialog"] ') and not any(a.attrs.get("role") == "dialog" for a in el.ancestors()):
+        return False
+    if tag and el.tag != tag:
+        return False
+    if ident and el.attrs.get("id") != ident:
+        return False
+    for a, op, v in _ATTR.findall(rest):
+        have = el.attrs.get(a)
+        if have is None:
+            return False
+        if op == "=" and have != v or op == "^=" and not have.startswith(v) or op == "*=" and v not in have:
+            return False
+    for t in _HAS_TEXT.findall(rest):
+        if t.lower() not in el.inner().lower():
+            return False
+    return True
+
+
+def matches(el, selector):
+    return any(_clause_matches(el, c.strip()) for c in selector.split(", "))
+
+
 class FakeLocator:
-    """kind: what a SAVE_DIALOG locator was narrowed with (has=...); scoped: found inside the dialog."""
+    def __init__(self, page, selector, scope=None, has=None, idx=None):
+        self.page, self.selector, self.scope, self.has, self.idx = page, selector, scope, has, idx
 
-    def __init__(self, page, sel, idx=None, kind=None, scoped=False):
-        self.page, self.sel, self.idx, self.kind, self.scoped = page, sel, idx, kind, scoped
+    def _all(self):
+        everything = self.page.elements()            # fresh tree; elements are compared by uid
+        els = [e for e in everything if matches(e, self.selector)]
+        if self.scope is not None:
+            els = [e for e in els if self.scope.uid in [a.uid for a in e.ancestors()]]
+        if self.has is not None:
+            els = [e for e in els if any(e.uid in [a.uid for a in x.ancestors()] and matches(x, self.has)
+                                         for x in everything)]
+        return els
 
-    def _rows(self):
-        p = self.page
-        rows = list(p.list_names) if p.dialog_open else []
-        if not self.scoped:
-            rows += p.stray_rows                    # rows that are not inside the dialog
-        return rows
-
-    def locator(self, sel, has_text=None):          # chaining from a dialog
-        return FakeLocator(self.page, sel, scoped=True)
+    def locator(self, selector, has_text=None):
+        outer = self._all()
+        assert len(outer) == 1, "fake: chained locator needs exactly one container"
+        return FakeLocator(self.page, selector, scope=outer[0])
 
     def count(self):
-        p, sel = self.page, self.sel
-        if sel in p.extra_counts:
-            return p.extra_counts[sel]
-        if sel == S.ACCOUNT_BUTTON:
-            return int(p.signed_in and p.mode in ("home", "place"))
-        if sel == S.SIGN_IN_LINK:
-            return int(not p.signed_in)
-        if sel == S.CAPTCHA:
-            return int(p.captcha)
-        if sel == S.CONSENT_FORM:
-            return 0
-        if sel == S.SAVE_BUTTON:
-            return p.save_button_count if p.mode == "place" else 0
-        if sel == S.SAVE_DIALOG:
-            if self.kind == S.LIST_ITEM:
-                return p.dialog_count if p.dialog_open else 0
-            if self.kind == S.LIST_NAME_INPUT:
-                return int(p.creating)
-            return 0
-        if sel == S.LIST_ITEM:
-            return len(self._rows())
-        if sel == S.NEW_LIST_BUTTON:
-            return int(p.dialog_open)
-        if sel in (S.LIST_NAME_INPUT, S.CREATE_LIST_CONFIRM):
-            return int(p.creating)
-        return 0
+        if self.selector in self.page.extra_counts:
+            return self.page.extra_counts[self.selector]
+        return len(self._all())
 
     def nth(self, i):
-        return FakeLocator(self.page, self.sel, i, scoped=self.scoped)
+        return FakeLocator(self.page, self.selector, self.scope, self.has, i)
+
+    def _el(self):
+        els = self._all()
+        return els[self.idx or 0]
 
     def inner_text(self, timeout=None):
-        if self.sel == S.BODY:
-            return self.page.body_text
-        if self.sel == S.LIST_ITEM:
-            return f"{self._rows()[self.idx]}\nPrivate · 3 places"
-        return ""
+        return self._el().inner()
 
     def get_attribute(self, name, timeout=None):
-        assert self.sel == S.LIST_ITEM and name == S.CHECKED_ATTR
-        if self.page.checked_attr is not None:
-            return None if self.page.checked_attr == "<missing>" else self.page.checked_attr
-        return "true" if self._rows()[self.idx] in self.page.membership(self.page.coords) else "false"
+        return self._el().attrs.get(name)
+
+    def fill(self, text, timeout=None):
+        assert self._el().kind == "name_input"
+        self.page.new_name = text
 
     def click(self, timeout=None):
         p = self.page
-        if p.click_error is not None and self.sel == p.click_error[0]:
+        if p.click_error is not None and self.selector == p.click_error[0]:
             p.url = p.click_error[2]
             raise p.click_error[1]
-        if self.sel in p.click_to:
-            p.url = p.click_to[self.sel]
+        if self.selector in p.click_to:
+            p.url = p.click_to[self.selector]
             return
-        if self.sel == S.SAVE_BUTTON:
-            p.dialog_open = True
-        elif self.sel == S.LIST_ITEM:
-            name = self._rows()[self.idx]
-            if p.toggle_works:
-                p.membership(p.coords).symmetric_difference_update({name})
-        elif self.sel == S.NEW_LIST_BUTTON:
-            if p.new_list_goes_to:
-                p.url = p.new_list_goes_to
-            else:
-                p.creating = True
-        elif self.sel == S.CREATE_LIST_CONFIRM:
-            p.list_names.append(p.new_name)
-            p.membership(p.coords).add(p.new_name)
-            p.creating = False
-            p.dialog_open = False
-
-    def fill(self, text, timeout=None):
-        assert self.sel == S.LIST_NAME_INPUT
-        self.page.new_name = text
+        p.click_el(self._el())
 
 
 class FakeKeyboard:
@@ -485,7 +505,7 @@ class FakeKeyboard:
 
 
 class FakePage:
-    """Just enough of Google Maps: home, a place page with a Save dialog of ticked/unticked lists."""
+    """Google Maps as probed live: home, a place page with Save button, Save menu, New list form."""
 
     def __init__(self, lists=(LIST_A, LIST_B, OLD_BIG_LIST, "Favorites"), signed_in=True):
         self.list_names = list(lists)
@@ -494,8 +514,8 @@ class FakePage:
         self.captcha = False
         self.body_text = "Google Maps"
         self.save_button_count = 1
-        self.dialog_count = 1       # how many dialogs contain the list rows
-        self.stray_rows = []        # list-row lookalikes outside the dialog
+        self.dialog_count = 1       # how many menus hold the list rows
+        self.stray_rows = []        # list-row lookalikes outside the menu
         self.checked_attr = None    # override aria-checked ("<missing>" = attribute absent)
         self.toggle_works = True
         self.redirect_url = None
@@ -511,7 +531,12 @@ class FakePage:
         self.coords = None
         self.keyboard = FakeKeyboard(self)
         self.visited = []
+        self.dialog_lookalike_rows = False   # an unrelated role=dialog that holds menuitemradio rows
+        self.row_role = "menuitemradio"
+        self.extra_form_inputs = 0           # additional text inputs inside the New list form
+        self.create_variant = "both"         # "both" | "data-value" | "aria-label" | "icon-only"
 
+    # --- test conveniences
     @property
     def save_button(self):
         return self.save_button_count > 0
@@ -520,9 +545,100 @@ class FakePage:
     def save_button(self, v):
         self.save_button_count = 1 if v else 0
 
-    def membership(self, coords):
-        return self.places.setdefault(coords, set())
+    def membership(self, coords):                 # read-only view
+        return self.places.get(coords, set())
 
+    # --- the DOM
+    def row_lines(self, i, name):
+        if i % 3 == 0:
+            return ["", "", name, "Shared · 2,538 places"]
+        if i % 3 == 1:
+            return [name, "Private · 2,278 places"]
+        return [GLYPH_TICK if name in self.membership(self.coords) else GLYPH_LIST, name, "Private · 760 places"]
+
+    def row_attrs(self, i, name):
+        attrs = {"role": self.row_role, "data-index": str(i), "jsaction": "actionmenu.select"}
+        if self.checked_attr is None:
+            attrs["aria-checked"] = "true" if name in self.membership(self.coords) else "false"
+        elif self.checked_attr != "<missing>":
+            attrs["aria-checked"] = self.checked_attr
+        return attrs
+
+    def elements(self):
+        els = []
+        body = El("body", text=self.body_text)
+        els.append(body)
+        if self.captcha:
+            els.append(El("iframe", {"src": "https://www.google.com/recaptcha/api2/anchor"}))
+        if self.signed_in and self.mode in ("home", "place"):
+            els.append(El("a", {"aria-label": "Google Account: Test (test@example.com)"}))
+        if not self.signed_in:
+            els.append(El("a", {"aria-label": "Sign in"}))
+        if self.mode != "place":
+            return self._number(els)
+        # unrelated page furniture: two dialogs, a combobox input and textareas outside any dialog
+        for k in range(2):
+            d = El("div", {"role": "dialog"})
+            els.append(d)
+            if k == 0 and self.dialog_lookalike_rows:
+                els.append(El("div", {"role": "menuitemradio", "aria-checked": "false"}, parent=d,
+                              lines=["Anyone with the link", "Private"]))
+        els.append(El("input", {"type": "text", "role": "combobox", "id": "searchboxinput"}))
+        els.append(El("textarea", {}))
+        on_some_list = bool(self.membership(self.coords))
+        for _ in range(self.save_button_count):
+            v = "Saved" if on_some_list else "Save"
+            els.append(El("button", {"data-value": v, "aria-label": v}, text=v, kind="save_button"))
+        for name in self.stray_rows:
+            els.append(El("div", {"role": "menuitemradio", "aria-checked": "false"}, lines=[name, "Private · 1 place"]))
+        if self.dialog_open:
+            for _ in range(self.dialog_count):
+                menu = El("div", {"role": "menu", "aria-label": "Save in your lists"})
+                els.append(menu)
+                for i, name in enumerate(self.list_names):
+                    els.append(El("div", self.row_attrs(i, name), parent=menu, kind="row", lines=self.row_lines(i, name)))
+                els.append(El("button", {"aria-label": ""}, text=GLYPH_LIST + " New list", parent=menu, kind="new_list"))
+        if self.creating:
+            form = El("div", {"role": "dialog"})
+            create_attrs = {"both": {"data-value": "Create", "aria-label": "Create"},
+                            "data-value": {"data-value": "Create"},
+                            "aria-label": {"aria-label": "Create"},
+                            "icon-only": {"data-value": "Create"}}[self.create_variant]
+            create_text = "" if self.create_variant == "icon-only" else "Create"
+            els += [form,
+                    El("input", {"type": "text"}, parent=form, kind="name_input"),
+                    *[El("input", {"type": "text"}, parent=form, kind="name_input") for _ in range(self.extra_form_inputs)],
+                    El("button", {"aria-label": "Choose icon"}, text="Choose icon", parent=form),
+                    El("button", {"aria-label": "Close"}, text="Close", parent=form),
+                    El("button", {"aria-label": "Close"}, text="Close", parent=form),
+                    El("button", create_attrs, text=create_text, parent=form, kind="create")]
+        return self._number(els)
+
+    @staticmethod
+    def _number(els):
+        for n, e in enumerate(els):
+            e.uid = n
+        return els
+
+    def click_el(self, el):
+        if el.kind == "save_button":
+            self.dialog_open = True
+        elif el.kind == "row":
+            if self.toggle_works:
+                self.places.setdefault(self.coords, set()).symmetric_difference_update(
+                    {self.list_names[int(el.attrs["data-index"])]})
+        elif el.kind == "new_list":
+            if self.new_list_goes_to:
+                self.url = self.new_list_goes_to
+            else:
+                self.creating = True
+        elif el.kind == "create":
+            self.list_names.append(self.new_name)
+            self.places.setdefault(self.coords, set()).add(self.new_name)
+            self.creating = False
+            self.dialog_open = False
+
+    # --- the Playwright surface the ops use
     def goto(self, url, wait_until=None, timeout=None):
         self.visited.append(url)
         self.url = self.redirect_url or url
@@ -535,8 +651,8 @@ class FakePage:
             self.mode = "place"
             self.coords = f"{m.group(1)},{m.group(2)}"
 
-    def locator(self, sel, has_text=None, has=None):
-        return FakeLocator(self, sel, kind=has.sel if has is not None else None)
+    def locator(self, selector, has_text=None, has=None):
+        return FakeLocator(self, selector, has=has.selector if has is not None else None)
 
     def wait_for_timeout(self, ms):
         pass
@@ -1219,3 +1335,88 @@ def test_p7_wrapper_logs_a_failed_pull_and_does_not_sync(tmp_path):
 def test_p7_wrapper_without_alert_command_says_so_in_the_log(tmp_path):
     r, lines, _ = _run_wrapper(tmp_path, sync_rc=4, alert=False)
     assert r.returncode == 4 and lines[-1]["stage"] == "alert" and "no alert sent" in lines[-1]["detail"]
+
+
+# =====================================================================================================
+# Live DOM facts (CTO probe, English UI): one test per selector change. Each fails on the old constant.
+# =====================================================================================================
+def _place_with(on_list):
+    p = FakePage()
+    p.goto(S.place_url(25.0, 121.5))
+    if on_list:
+        p.places["25.000000,121.500000"] = {LIST_A}
+    return p
+
+
+@pytest.mark.parametrize("on_list", [False, True])
+def test_live_save_button_is_data_value_save_or_saved_and_matches_exactly_once(on_list):
+    p = _place_with(on_list)
+    buttons = [e for e in p.elements() if matches(e, S.SAVE_BUTTON)]
+    assert len(buttons) == 1
+    assert buttons[0].attrs["data-value"] == ("Saved" if on_list else "Save")
+    assert ms.add_point(_place_with(on_list), LIST_B, 25.0, 121.5) == "added"      # the click path works too
+
+
+def test_live_save_menu_is_the_role_menu_and_ignores_unrelated_dialogs():
+    p = FakePage()
+    p.dialog_lookalike_rows = True            # one of the page's role=dialog elements also holds radio rows
+    assert ms.add_point(p, LIST_A, 25.0, 121.5) == "added"
+    assert p.places["25.000000,121.500000"] == {LIST_A}
+
+
+@pytest.mark.parametrize("role", ["menuitemradio", "menuitemcheckbox"])
+def test_live_list_rows_are_menuitemradio_and_menuitemcheckbox_is_still_accepted(role):
+    p = FakePage()
+    p.row_role = role
+    assert ms.add_point(p, LIST_A, 25.0, 121.5) == "added"
+    assert ms.remove_point(p, LIST_A, 25.0, 121.5) == "removed"
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_live_name_is_matched_on_any_line_of_the_row_text(index):
+    # row text shapes seen live: ["","",name,"Shared · N places"], [name,"Private · N places"],
+    # [glyph,name,"Private · N places"]; the shape follows the row index in the fake
+    names = ["x"] * index + [LIST_A]
+    p = FakePage(lists=names)
+    lines = p.row_lines(index, LIST_A)
+    assert LIST_A in lines and (lines[0] == LIST_A) == (index == 1)
+    assert ms.add_point(p, LIST_A, 25.0, 121.5) == "added"
+    assert p.places["25.000000,121.500000"] == {LIST_A}
+
+
+def test_live_name_match_is_never_a_substring_of_a_line():
+    p = FakePage(lists=[LIST_A + " 備份", "舊 " + LIST_A, LIST_B])
+    with pytest.raises(ms.OpFailed, match="found 0"):
+        ms.add_point(p, LIST_A, 25.0, 121.5)
+    assert p.places == {}
+
+
+def test_live_new_list_form_input_is_the_one_text_input_inside_the_create_dialog():
+    p = FakePage(lists=[OLD_BIG_LIST])
+    # the page also has a combobox text input and textareas outside any dialog, and 2 unrelated dialogs
+    assert ms.ensure_list(p, LIST_A, 25.0, 121.5) == "created"
+    assert p.list_names[-1] == LIST_A
+
+
+def test_live_new_list_form_with_two_text_inputs_is_refused():
+    p = FakePage(lists=[OLD_BIG_LIST])
+    p.extra_form_inputs = 1
+    with pytest.raises(ms.OpFailed, match=r"found 2 \(LIST_NAME_INPUT\)"):
+        ms.ensure_list(p, LIST_A, 25.0, 121.5)
+    assert p.list_names == [OLD_BIG_LIST]
+
+
+@pytest.mark.parametrize("variant", ["both", "data-value", "aria-label", "icon-only"])
+def test_live_create_button_is_found_by_data_value_or_aria_label_not_by_its_text(variant):
+    p = FakePage(lists=[OLD_BIG_LIST])
+    p.create_variant = variant
+    assert ms.ensure_list(p, LIST_A, 25.0, 121.5) == "created"
+
+
+def test_live_create_dialog_is_the_one_role_dialog_that_holds_the_create_button():
+    p = FakePage(lists=[OLD_BIG_LIST])
+    p.goto(S.place_url(25.0, 121.5))
+    p.creating = True
+    dialogs = [e for e in p.elements() if matches(e, S.CREATE_DIALOG)]
+    holding = p.locator(S.CREATE_DIALOG, has=p.locator(S.CREATE_LIST_CONFIRM)).count()
+    assert len(dialogs) == 3 and holding == 1

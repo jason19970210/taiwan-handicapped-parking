@@ -305,13 +305,13 @@ def check_session(page) -> None:
         raise ReloginNeeded("relogin needed: no account button on google.com/maps")
 
 
-def _dialog_with(page, inner: str):
-    """The dialog(s) that contain the given inner selector."""
-    return page.locator(S.SAVE_DIALOG, has=page.locator(inner))
+def _container_with(page, container: str, inner: str):
+    """The element(s) matching `container` that contain `inner`."""
+    return page.locator(container, has=page.locator(inner))
 
 
 def _save_dialog(page):
-    return _one(page, _dialog_with(page, S.LIST_ITEM), "save dialog", "SAVE_DIALOG")
+    return _one(page, _container_with(page, S.SAVE_DIALOG, S.LIST_ITEM), "save menu", "SAVE_DIALOG")
 
 
 def _open_save_dialog(page, lat: float, lon: float) -> None:
@@ -320,7 +320,7 @@ def _open_save_dialog(page, lat: float, lon: float) -> None:
         _fail(page, "save button not found (SAVE_BUTTON)")
     check_blocked(page)
     _one(page, page.locator(S.SAVE_BUTTON), "save button", "SAVE_BUTTON").click(timeout=10000)
-    if not _poll(page, lambda: _dialog_with(page, S.LIST_ITEM).count(), 8000):
+    if not _poll(page, lambda: _container_with(page, S.SAVE_DIALOG, S.LIST_ITEM).count(), 8000):
         _fail(page, "save dialog did not open (SAVE_DIALOG, LIST_ITEM)")
     check_blocked(page)
 
@@ -332,15 +332,16 @@ def _close_dialog(page) -> None:
 
 def _find_list_item(page, name: str):
     """
-    The one Save-dialog row whose first text line equals the list name, or None when there is
-    none. Rows are read only inside the open dialog. More than one match is a failure.
+    The one Save-menu row that has a text line (stripped) exactly equal to the list name, or None when
+    there is none. Rows carry icon-glyph lines before the name and a "Private/Shared · N places" line
+    after it, so neither the first line nor a substring is used. Rows are read only inside the open
+    menu. More than one match is a failure.
     """
     rows = _save_dialog(page).locator(S.LIST_ITEM)
     found = []
     for i in range(rows.count()):
         row = rows.nth(i)
-        text = (row.inner_text() or "").strip()
-        if text.splitlines()[:1] == [name]:
+        if name in [ln.strip() for ln in (row.inner_text() or "").splitlines()]:
             found.append(row)
     if len(found) > 1:
         _fail(page, f"list '{name}': expected exactly 1 row in the save dialog, found {len(found)} (LIST_ITEM)")
@@ -400,9 +401,10 @@ def ensure_list(page, name: str, lat: float, lon: float) -> str:
     if not dialog.locator(S.NEW_LIST_BUTTON).count():
         _fail(page, "new list button not found (NEW_LIST_BUTTON)")
     _one(page, dialog.locator(S.NEW_LIST_BUTTON), "new list button", "NEW_LIST_BUTTON").click(timeout=10000)
-    if not _poll(page, lambda: _dialog_with(page, S.LIST_NAME_INPUT).count(), 8000):
-        _fail(page, "list name form did not open (LIST_NAME_INPUT)")
-    form = _one(page, _dialog_with(page, S.LIST_NAME_INPUT), "list name dialog", "SAVE_DIALOG")
+    if not _poll(page, lambda: _container_with(page, S.CREATE_DIALOG, S.CREATE_LIST_CONFIRM).count(), 8000):
+        _fail(page, "list name form did not open (CREATE_DIALOG, CREATE_LIST_CONFIRM)")
+    form = _one(page, _container_with(page, S.CREATE_DIALOG, S.CREATE_LIST_CONFIRM),
+                "list name dialog", "CREATE_DIALOG")
     _one(page, form.locator(S.LIST_NAME_INPUT), "list name input", "LIST_NAME_INPUT").fill(name, timeout=10000)
     _one(page, form.locator(S.CREATE_LIST_CONFIRM), "create button", "CREATE_LIST_CONFIRM").click(timeout=10000)
     page.wait_for_timeout(2000)

@@ -45,29 +45,34 @@ class GoogleMapsSelectors:
         "before you continue to google",
     )
 
-    # ---- place panel and Save dialog --------------------------------------
-    # Button in the place panel; exactly ONE must match (the sync refuses to click otherwise).
-    # Reads "Save" when the place is on none of our lists and "Saved in ..." otherwise; both open
-    # the same dialog. A bare aria-label "Saved" is deliberately not matched: that is the left rail.
-    SAVE_BUTTON = (
-        'button[data-value="Save"], button[aria-label="Save"], '
-        'button[aria-label^="Saved in"], button[aria-label="儲存"], '
-        'button[aria-label^="已儲存於"]'
-    )
-    # The open dialog/menu. List rows and the mutation controls are looked up only inside the one
-    # dialog that contains them (exactly one such dialog must exist).
-    SAVE_DIALOG = '[role="dialog"], [role="menu"]'
-    # One row per list in the Save dialog; aria-checked must be exactly "true" or "false".
-    # The list name is the first line of the row's text; exactly one row must match the name.
-    LIST_ITEM = '[role="menuitemcheckbox"]'
+    # ---- place panel and Save menu (probed live, English UI, hl=en) ----------
+    # Place-page button; exactly ONE must match (the sync refuses to click otherwise). Its
+    # data-value is "Saved" (aria-label "Saved") when the place is already on some list and
+    # presumably "Save" when on none. The left-rail "Saved" item is not such a button.
+    SAVE_BUTTON = 'button[data-value="Save"], button[data-value="Saved"]'
+    # Clicking it opens ONE div[role="menu"][aria-label="Save in your lists"]. The two role=dialog
+    # elements on the place page are unrelated. List rows and "New list" are looked up only inside
+    # the one menu that contains rows.
+    SAVE_DIALOG = '[role="menu"]'
+    # One row per list: div[role="menuitemradio"] with aria-checked exactly "true" or "false".
+    # Row text = glyph lines (private-use icons, may be empty), the name, then a
+    # "Private/Shared · N places" line. A row matches a list when ONE of its lines, stripped, is
+    # exactly the list name; never a substring and never "the first line". Exactly one row may match.
+    LIST_ITEM = '[role="menuitemradio"], [role="menuitemcheckbox"]'
     CHECKED_ATTR = "aria-checked"
     CHECKED_VALUE = "true"
     UNCHECKED_VALUE = "false"
 
-    # ---- list creation: New list is in the Save dialog; the name form is in the dialog holding the input
+    # ---- list creation ------------------------------------------------------
+    # "New list" is a button inside the Save menu (text " New list" after an icon glyph, empty aria-label).
     NEW_LIST_BUTTON = 'button:has-text("New list"), button:has-text("新增清單")'
-    LIST_NAME_INPUT = 'input[aria-label="List name"], input[aria-label="清單名稱"]'
-    CREATE_LIST_CONFIRM = 'button:has-text("Create"), button:has-text("建立")'
+    # It opens a form in a role=dialog: a text input with no aria-label/placeholder, a "Choose icon"
+    # button, two Close buttons and button[data-value="Create"]. The form dialog is the ONE
+    # CREATE_DIALOG that contains the Create button; the input must be unique inside it (inputs outside
+    # the dialog, a combobox and textareas, do not count).
+    CREATE_DIALOG = '[role="dialog"]'
+    LIST_NAME_INPUT = '[role="dialog"] input[type="text"]'
+    CREATE_LIST_CONFIRM = 'button[data-value="Create"], button[aria-label="Create"], button[aria-label="建立"]'
 
     # ---- saved-lists view (used only by --count) ---------------------------
     SAVED_NAV = 'button[aria-label="Saved"], button[aria-label="已儲存"]'
