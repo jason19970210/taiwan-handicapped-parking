@@ -29,10 +29,11 @@ Automated system for collecting, managing, and syncing handicapped parking locat
 
 - **New Taipei City**:
   - Format: CSV API with pagination from New Taipei City Open Data
-  - Filtering: `NAME` field contains "汽車身心障礙專用"
+  - Filtering: `name` field contains "汽車身心障礙專用" (column names are matched case-insensitively; a missing filter column is a hard error, never "keep everything")
   - Coordinates: WGS84 (lat/lon fields used directly)
   - Page size: 1000 records per request
-  - Caching: 1-week cache for API responses
+  - The API sometimes answers HTTP 200 with an empty body or a truncated page mid-run. Pages are retried with backoff; an empty page is never taken as the end of data, a short page only after it is re-read and the next page is confirmed empty; if a page still cannot be read the run fails and writes nothing. The last page is re-checked by content (identity columns) and against the same offset read at another page size. A crawl-wide deadline (600 s) and retry budget (60) bound all nested retries.
+  - Caching: 1-week cache for API responses, written only after a complete crawl
 
 ### Data Format
 CSV file with columns:
@@ -87,7 +88,18 @@ python scripts/main.py collect
 - Downloads data from all configured sources
 - Filters and transforms data
 - Merges and deduplicates records
+- Any failing source fails the whole run (no partial CSV)
+- Count guard: per-city row counts are compared with the CSV on disk before it is overwritten. A city that loses more than 5% (`--max-drop-pct`, or `output.max_drop_pct` in the config) or gains more than 50% (`--max-growth-pct`) aborts the run with exit code 2 and writes nothing. Use `--accept-count-change` only for an intended dataset change.
 - Saves to `data/parking_locations.csv`
+
+#### Per-district lists (no Google writes)
+```bash
+python scripts/main.py build-lists          # data/lists/*.csv + index.json + assignment_report.json
+python scripts/main.py plan-sync --out tmp/sync_plan.json   # add/remove plan vs data/sync_state.json
+```
+- District of every row comes from point-in-polygon against `data/boundaries/tw_districts_tpe_ntpc.geojson` (MOI/NLSC township boundaries, data.gov.tw dataset 7441; source URL, version and simplification are recorded inside the file; rebuild with `scripts/build_boundaries.py`).
+- One list per city + district; a district over 500 rows is split into numbered lists (`-1`, `-2`, ...) of at most 500 rows, cut from a stable sort by road, latitude, longitude. Rows are never merged.
+- `data/sync_state.json` records what was last written to Google per list, keyed by point id (`TPE:`/`NTPC:` + lat,lon at 6 decimals; same-coordinate rows get a short road hash). An empty state makes `plan-sync` print the full initial load.
 
 #### 2. Authenticate with Google Maps
 ```bash

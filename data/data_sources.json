@@ -29,12 +29,14 @@
         "format": "csv_paginated",
         "coordinate_system": "WGS84",
         "page_size": 1000,
-        "filter_field": "NAME",
+        "max_retries": 6,
+        "retry_backoff_seconds": 2,
+        "filter_field": "name",
         "filter_pattern": "汽車身心障礙專用",
         "fields_mapping": {
           "city": "fixed:New Taipei City",
-          "area": "AreaCode",
-          "road": "ROADNAME",
+          "area": "areacode",
+          "road": "roadname",
           "lat": "latitude",
           "lon": "longitude"
         }

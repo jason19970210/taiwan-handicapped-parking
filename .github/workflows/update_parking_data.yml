@@ -14,6 +14,8 @@ env:
 jobs:
   collect-and-update:
     runs-on: ubuntu-latest
+    # Whole job: install + collect (<= 20 min, see step) + diff/commit/push + log upload.
+    timeout-minutes: 30
     outputs:
       data_changed: ${{ steps.check_diff.outputs.changed }}
       commit_sha: ${{ steps.commit_changes.outputs.commit_sha }}
@@ -46,6 +48,10 @@ jobs:
 
       - name: Download and process data
         id: process_data
+        # The New Taipei crawl stops itself after 10 min (crawl_deadline_seconds) and a healthy
+        # run takes well under 2 min. This step limit only backs that up and, being below the job
+        # limit, leaves 10 min for the always() cache/log steps and the commit steps.
+        timeout-minutes: 20
         run: |
           python scripts/main.py collect
         env:

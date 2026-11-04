@@ -6,11 +6,12 @@ Fetches paginated data (JSON or CSV), filters by parking type, and converts to s
 import requests
 import pandas as pd
 from io import StringIO
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
 import hashlib
 import pickle
+import time
 
 from .base_handler import BaseDataHandler
 from ..utils.geocoding import CoordinateConverter, decimal_to_dms
@@ -20,18 +21,60 @@ import logging
 logger = setup_logger(__name__, log_file='logs/data_retrieval.log', level=logging.DEBUG)
 
 
+class PaginationError(RuntimeError):
+    """The paginated API could not be read completely and consistently."""
+
+
 class NewTaipeiHandler(BaseDataHandler):
     """
     Handler for New Taipei City handicapped parking data.
 
     Data source: New Taipei City Open Data API
     Format: Paginated JSON or CSV API
-    Filtering: charged field contains "身汽" (handicapped vehicle parking)
+    Filtering: name field contains "汽車身心障礙專用" (handicapped car space)
     """
 
     def __init__(self, config, source_id=None):
         """Initialize handler with cache and debug configuration."""
         super().__init__(config, source_id)
+        # The live API serves lower-case column names (it used to be upper case).
+        # Match case-insensitively so a cosmetic rename can never again silently
+        # disable the filter and the area/road mapping.
+        self.fields_mapping = {
+            k: (v if (not isinstance(v, str) or v.startswith('fixed:')) else v.lower())
+            for k, v in self.fields_mapping.items()
+        }
+        self.filter_field = str(config.get('filter_field', 'name')).lower()
+        self.filter_pattern = config.get('filter_pattern', '汽車身心障礙專用')
+        self.max_retries = int(config.get('max_retries', 6))
+        self.retry_backoff = float(config.get('retry_backoff_seconds', 2.0))
+        self.retry_backoff_max = float(config.get('retry_backoff_max_seconds', 30.0))
+        self.request_timeout = float(config.get('request_timeout_seconds', 60))
+        self.connect_timeout = float(config.get('connect_timeout_seconds', 10))
+        # Whole-crawl limits, shared by every nested retry/confirmation loop:
+        #   crawl_deadline_seconds  monotonic wall-clock cap for fetch_data (default 600 s;
+        #                           a healthy crawl takes ~25 s)
+        #   retry_budget            total retries (failed reads + glitch re-reads) across the
+        #                           crawl (default 60)
+        self.crawl_deadline = float(config.get('crawl_deadline_seconds', 600))
+        self.retry_budget = int(config.get('retry_budget', 60))
+        self.end_confirmations = int(config.get('end_confirmations', 2))
+        self.max_pages = int(config.get('max_pages', 200))
+        self.required_columns = sorted(
+            {self.filter_field}
+            | {
+                v
+                for k, v in self.fields_mapping.items()
+                if k in ('area', 'road', 'lat', 'lon') and not v.startswith('fixed:')
+            }
+        )
+        # Columns that identify a row; live status fields (e.g. parkingstatus) are excluded
+        # so a legitimate status flip between two reads is not mistaken for a different page.
+        self.identity_columns = [
+            c.lower() for c in config.get('identity_columns', [])
+        ] or sorted(set(self.required_columns) | {'id', 'cellid'})
+        self._now = time.monotonic
+        self._start_crawl()
         self.cache_dir = Path('cache/new_taipei_city')
         self.cache_expiry_days = 7
         self.debug_dir = Path('debug')
@@ -61,7 +104,8 @@ class NewTaipeiHandler(BaseDataHandler):
         # Create a hash of the URL to use as filename
         url_str = self.url if self.url else "default"
         url_hash = hashlib.md5(url_str.encode()).hexdigest()
-        return self.cache_dir / f'api_data_{url_hash}.pkl'
+        # v2: v1 caches may hold the unfiltered ~31k-row result of the column-case bug
+        return self.cache_dir / f'api_data_v2_{url_hash}.pkl'
 
     def _is_cache_valid(self, cache_path: Path) -> bool:
         """Check if cached file exists and is not expired."""
@@ -128,151 +172,286 @@ class NewTaipeiHandler(BaseDataHandler):
         '65000290': '烏來區',
     }
 
+    def _start_crawl(self):
+        """Reset the shared deadline and retry budget (called at the start of every crawl)."""
+        self._deadline = self._now() + self.crawl_deadline
+        self._retries_left = self.retry_budget
+
+    def _remaining(self) -> float:
+        return self._deadline - self._now()
+
+    def _check_deadline(self):
+        if self._remaining() <= 0:
+            raise PaginationError(
+                f"crawl deadline of {self.crawl_deadline:g}s exceeded; refusing to continue"
+            )
+
+    def _spend_retry(self, what: str):
+        """Take one retry from the budget shared by all loops; fail loudly when it is gone."""
+        self._retries_left -= 1
+        if self._retries_left < 0:
+            raise PaginationError(
+                f"shared retry budget of {self.retry_budget} exhausted ({what})"
+            )
+
+    def _sleep_backoff(self, attempt: int):
+        self._check_deadline()
+        time.sleep(min(self.retry_backoff * (2 ** (attempt - 1)), self.retry_backoff_max,
+                       max(self._remaining(), 0)))
+
+    def _identity_digest(self, df: pd.DataFrame) -> str:
+        """Order-independent hash of the identity columns of a page."""
+        cols = [c for c in self.identity_columns if c in df.columns]
+        rows = sorted(tuple(map(str, r)) for r in df[cols].itertuples(index=False, name=None))
+        return hashlib.sha256(repr(rows).encode('utf-8')).hexdigest()
+
+    def _read_page(self, page: int, page_size: int) -> pd.DataFrame:
+        """
+        Request one page and parse it. Retries with exponential backoff on
+        network errors, HTTP errors, unparsable bodies and bodies that do not
+        have the expected columns. Every retry is charged to the crawl-wide
+        retry budget and every request is checked against the crawl deadline.
+        Raises PaginationError once any limit runs out.
+
+        Returns an empty DataFrame for an empty body (a legitimate "past the
+        end" answer, which callers must confirm). Column names are lower-cased.
+        """
+        url = f"{self.url}?page={page}&size={page_size}"
+        last_error = None
+        for attempt in range(1, self.max_retries + 1):
+            self._check_deadline()
+            try:
+                logger.info(f"Fetching page {page} (attempt {attempt}/{self.max_retries}): {url}")
+                remaining = self._remaining()
+                response = requests.get(
+                    url,
+                    timeout=(min(self.connect_timeout, remaining),
+                             max(1, min(self.request_timeout, remaining))),
+                )
+                self._check_deadline()  # a slow request that finally answered is still too late
+                response.raise_for_status()
+                text = response.text
+                if not text.strip():
+                    return pd.DataFrame()
+                df = pd.read_csv(StringIO(text), dtype=str)
+                df.columns = [str(c).strip().lower() for c in df.columns]
+                missing = [c for c in self.required_columns if c not in df.columns]
+                if missing:
+                    raise ValueError(
+                        f"response is missing columns {missing}; got {list(df.columns)[:20]}"
+                    )
+                return df
+            except (requests.RequestException, ValueError, pd.errors.ParserError,
+                    pd.errors.EmptyDataError) as e:
+                last_error = e
+                self._check_deadline()  # a slow failure past the deadline ends the crawl now
+                logger.warning(f"Page {page} attempt {attempt}/{self.max_retries} failed: {e!r}")
+                self._spend_retry(f"page {page}: {e!r}")
+                if attempt < self.max_retries:
+                    self._sleep_backoff(attempt)
+        raise PaginationError(
+            f"page {page} failed after {self.max_retries} attempts: {last_error!r}"
+        ) from last_error
+
+    def _confirm_last_page(self, page: int, page_size: int, df: pd.DataFrame) -> bool:
+        """
+        Is the short page `df` really the last page? True only if, on
+        `end_confirmations` spaced-out checks, page+1 is empty AND re-reading
+        `page` returns the same rows (compared by identity-column hash, not
+        just the row count). Anything else counts as a glitch.
+        """
+        want = self._identity_digest(df)
+        for check in range(1, self.end_confirmations + 1):
+            self._sleep_backoff(check)
+            if len(self._read_page(page + 1, page_size)) > 0:
+                return False
+            if self._identity_digest(self._read_page(page, page_size)) != want:
+                return False
+        return True
+
+    def _end_mismatch(self, total_rows: int, page_size: int, raw_pages) -> Optional[str]:
+        """
+        One independent check of the end of the data using a DIFFERENT page size, so a
+        server that consistently truncates the last page at one offset geometry
+        cannot pass. The alt-size page that contains offset `total_rows` must hold
+        exactly the rows from there up to `total_rows`, with the same identities as
+        the tail we already hold. Returns None when it does, else a description.
+
+        When `total_rows` is an exact multiple of the alt size that page is expected
+        to be empty, and an empty reply is also what an all-empty outage looks like.
+        So the end is never accepted on emptiness alone: the last FULL alt-size page
+        (the one just before) must also come back with exactly `alt` rows whose
+        identity digest equals the digest of the last `alt` collected rows. The digest
+        is order-independent (sorted), so it is set/multiset equality and does not
+        rely on both page sizes ordering rows identically.
+        """
+        alt = page_size - max(1, page_size // 10)
+        if alt < 1:
+            alt = page_size + 1
+        alt_page = total_rows // alt
+        expected = total_rows - alt_page * alt
+        tail = pd.concat(raw_pages, ignore_index=True) if raw_pages else pd.DataFrame()
+        want = self._identity_digest(tail.iloc[len(tail) - expected:]) if expected else None
+        got = self._read_page(alt_page, alt)
+        if len(got) != expected or (expected and self._identity_digest(got) != want):
+            return (f"page {alt_page} at size {alt} got {len(got)} rows, expected {expected}"
+                    + ("" if len(got) != expected else " with different content"))
+        if expected == 0:
+            # Positive evidence: no non-empty reply has confirmed the tail yet.
+            if total_rows <= 0 or len(tail) < alt:
+                return f"no collected tail of {alt} rows to confirm the end (total {total_rows})"
+            last_full = alt_page - 1
+            full = self._read_page(last_full, alt)
+            if len(full) != alt:
+                return (f"last full page {last_full} at size {alt} got {len(full)} rows, "
+                        f"expected {alt}")
+            if self._identity_digest(full) != self._identity_digest(tail.iloc[len(tail) - alt:]):
+                return (f"last full page {last_full} at size {alt} has rows that differ "
+                        f"from the collected tail")
+        logger.info(
+            f"End cross-check OK: page {alt_page} at size {alt} holds the expected "
+            f"{expected} trailing rows (total {total_rows})"
+        )
+        return None
+
+    def _verify_end(self, total_rows: int, page_size: int, raw_pages) -> None:
+        """Run _end_mismatch up to max_retries times; raise PaginationError if it never agrees."""
+        last = "no read"
+        for attempt in range(1, self.max_retries + 1):
+            last = self._end_mismatch(total_rows, page_size, raw_pages)
+            if last is None:
+                return
+            logger.warning(f"End cross-check mismatch ({last}); re-reading ({attempt}/{self.max_retries})")
+            self._spend_retry(f"end cross-check: {last}")
+            self._sleep_backoff(attempt)
+        raise PaginationError(
+            f"end cross-check failed after {self.max_retries} attempts: {last}; "
+            f"the last page of {total_rows} rows looks truncated or the data moved"
+        )
+
+    def _fetch_page(self, page: int, page_size: int, end_check=None):
+        """
+        Fetch one page and decide whether it is the last one.
+
+        The API gives no total count and, in practice, answers some requests
+        with an empty body or a truncated page while still saying HTTP 200
+        (seen live: 14 consecutive empty pages, and 881/823-row pages). So:
+        - a full page is never the last page;
+        - an empty first page is never accepted. A later empty page (reached only
+          after a full page) is the end only if a spaced re-read of the same
+          offset is empty again; fetch_data() then requires the end cross-check
+          at another page size to pass. Anything else is retried with backoff;
+        - a short non-empty page is the last page only after
+          _confirm_last_page() agrees.
+
+        Returns (DataFrame, is_last). Raises PaginationError if the page cannot
+        be obtained consistently within max_retries attempts.
+        """
+        reason = "no attempt made"
+        for attempt in range(1, self.max_retries + 1):
+            df = self._read_page(page, page_size)
+            n = len(df)
+            if n == page_size:
+                return df, False
+            if n == 0:
+                reason = "empty body"
+                if page > 0:  # the previous page was full, or we would not be here
+                    self._sleep_backoff(1)
+                    if len(self._read_page(page, page_size)) > 0:
+                        reason = "empty body that returned rows on re-read"
+                    else:
+                        mismatch = end_check() if end_check else "no end cross-check supplied"
+                        if mismatch is None:
+                            return df, True
+                        reason = f"empty body that the end cross-check rejects ({mismatch})"
+            elif self._confirm_last_page(page, page_size, df):
+                return df, True
+            else:
+                reason = f"short page ({n} < {page_size}) that is not confirmed as the last"
+            logger.warning(
+                f"Page {page}: {reason}; treating as a glitch and re-reading "
+                f"(attempt {attempt}/{self.max_retries})"
+            )
+            self._spend_retry(f"page {page}: {reason}")
+            self._sleep_backoff(attempt)
+        raise PaginationError(
+            f"page {page} did not return a consistent full page after "
+            f"{self.max_retries} attempts (last: {reason})"
+        )
+
     def fetch_data(self) -> pd.DataFrame:
         """
-        Fetch and filter paginated data from New Taipei City API.
+        Fetch and filter paginated CSV data from the New Taipei City API.
 
-        Supports both JSON and CSV formats based on config.
+        Fails loudly (PaginationError) instead of returning a partial result:
+        a page that cannot be fetched after retries, a missing filter column,
+        or a run with no matching rows at all. Nothing is cached unless the
+        whole crawl succeeded.
 
         Returns:
             pd.DataFrame: Filtered dataframe with handicapped parking records
-
-        Raises:
-            requests.HTTPError: If API request fails
-            Exception: If data processing fails
+                (lower-case column names)
         """
         logger.info("Starting New Taipei City data retrieval")
 
-        # Check cache first
         cache_path = self._get_cache_path()
         if self._is_cache_valid(cache_path):
             logger.info(f"Using cached data from: {cache_path}")
             return self._load_from_cache(cache_path)
 
-        # Check format
-        data_format = self.config.get('format', 'json_paginated')
-        is_csv = 'csv' in data_format.lower()
+        page_size = int(self.config.get('page_size', 1000))
+        logger.info(
+            f"Fetching with filter: {self.filter_field} contains '{self.filter_pattern}', "
+            f"page size {page_size}"
+        )
 
-        logger.info(f"Data format: {data_format}")
-
-        all_data = []
+        self._start_crawl()
+        frames = []
+        raw_pages = []  # last two raw pages, for the end cross-check
+        total_rows = 0
         page = 0
-        page_size = self.config.get('page_size', 1000)
-        filter_field = self.config.get('filter_field', 'charged')
-        filter_pattern = self.config.get('filter_pattern', '身汽')
-
-        logger.info(f"Fetching data with filter: {filter_field} contains '{filter_pattern}'")
-        logger.info(f"Page size: {page_size}")
-
-        max_pages = 100  # Safety limit to prevent infinite loops
-        while page < max_pages:
-            try:
-                # Make paginated request
-                url = f"{self.url}?page={page}&size={page_size}"
-                logger.info(f"Fetching page {page} from: {url}")
-
-                response = requests.get(url, timeout=30)
-                response.raise_for_status()
-
-                # Parse based on format
-                if is_csv:
-                    # Parse CSV response
-                    csv_content = response.text
-                    if not csv_content.strip():
-                        logger.info(f"Empty CSV response at page {page}, stopping pagination")
-                        break
-
-                    df_page = pd.read_csv(StringIO(csv_content))
-                    logger.info(f"Page {page}: received {len(df_page)} records")
-
-                    # Check if data is empty
-                    if len(df_page) == 0:
-                        logger.info(f"No more data at page {page}, stopping pagination")
-                        break
-
-                    # Filter by charged field containing pattern
-                    if filter_field in df_page.columns:
-                        df_filtered = df_page[df_page[filter_field].astype(str).str.contains(filter_pattern, na=False)]
-                        logger.info(f"Page {page}: {len(df_filtered)} records match filter")
-                        all_data.append(df_filtered)
-                    else:
-                        logger.warning(f"Filter field '{filter_field}' not found in CSV columns: {list(df_page.columns)}")
-                        all_data.append(df_page)
-
-                    # If we got less than page_size records, we're at the end
-                    if len(df_page) < page_size:
-                        logger.info(f"Received fewer records than page size, stopping pagination")
-                        break
-
-                else:
-                    # Parse JSON response
-                    data = response.json()
-
-                    # Check if response is a list or dict
-                    if isinstance(data, dict):
-                        # Some APIs wrap the data in a dict like {"data": [...]}
-                        if 'data' in data:
-                            data = data['data']
-                        elif 'records' in data:
-                            data = data['records']
-                        elif 'results' in data:
-                            data = data['results']
-
-                    # Ensure data is a list
-                    if not isinstance(data, list):
-                        logger.error(f"Unexpected API response format: {type(data)}")
-                        break
-
-                    logger.info(f"Page {page}: received {len(data)} records")
-
-                    # Check if data is empty (end of pagination)
-                    if not data or len(data) == 0:
-                        logger.info(f"No more data at page {page}, stopping pagination")
-                        break
-
-                    # Filter by charged field containing pattern
-                    filtered_data = [
-                        record for record in data
-                        if filter_pattern in str(record.get(filter_field, ''))
-                    ]
-                    logger.info(f"Page {page}: {len(filtered_data)} records match filter")
-
-                    all_data.append(pd.DataFrame(filtered_data))
-
-                    # If we got less than page_size records, we're probably at the end
-                    if len(data) < page_size:
-                        logger.info(f"Received fewer records than page size, stopping pagination")
-                        break
-
-                page += 1
-
-            except requests.RequestException as e:
-                logger.error(f"Error fetching page {page}: {e}")
-                # If first page fails, raise error; otherwise continue with what we have
-                if page == 0:
-                    raise
-                else:
-                    logger.warning(f"Stopping pagination due to error on page {page}")
-                    break
-
-            except Exception as e:
-                logger.error(f"Unexpected error on page {page}: {e}")
+        while True:
+            if page >= self.max_pages:
+                raise PaginationError(
+                    f"no end of data after {self.max_pages} pages; refusing to guess"
+                )
+            df_page, is_last = self._fetch_page(
+                page, page_size,
+                end_check=lambda: self._end_mismatch(total_rows, page_size, raw_pages),
+            )
+            total_rows += len(df_page)
+            if len(df_page) > 0:
+                raw_pages = (raw_pages + [df_page])[-2:]
+            if len(df_page) > 0:
+                matched = df_page[
+                    df_page[self.filter_field].astype(str).str.contains(
+                        self.filter_pattern, regex=False, na=False
+                    )
+                ]
+                logger.info(
+                    f"Page {page}: {len(df_page)} records, {len(matched)} match filter"
+                )
+                frames.append(matched)
+            if is_last:
                 break
+            page += 1
 
-        # Combine all data
-        if all_data:
-            combined_df = pd.concat(all_data, ignore_index=True)
-            logger.info(f"Total records fetched: {len(combined_df)} (from {page} pages)")
+        self._verify_end(total_rows, page_size, raw_pages)
 
-            # Save to cache
-            self._save_to_cache(combined_df, cache_path)
+        if not frames or sum(len(f) for f in frames) == 0:
+            raise PaginationError(
+                f"{total_rows} rows fetched over {page + 1} pages but none match "
+                f"{self.filter_field} contains '{self.filter_pattern}'"
+            )
 
-            # Save filtered data to CSV for debugging
-            self._save_debug_csv(combined_df, 'filtered_data')
-        else:
-            logger.warning("No records retrieved from API!")
-            combined_df = pd.DataFrame()
+        combined_df = pd.concat(frames, ignore_index=True)
+        logger.info(
+            f"Total: {total_rows} rows fetched in {page + 1} pages, "
+            f"{len(combined_df)} match the filter"
+        )
 
+        self._save_to_cache(combined_df, cache_path)
+        self._save_debug_csv(combined_df, 'filtered_data')
         return combined_df
 
     def transform_data(self, df: pd.DataFrame) -> pd.DataFrame:

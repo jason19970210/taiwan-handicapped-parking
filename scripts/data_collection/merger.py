@@ -43,12 +43,14 @@ class DataMerger:
             pd.DataFrame: Merged and deduplicated data
 
         Raises:
-            Exception: If any handler fails or no data is collected
+            RuntimeError: If any enabled source fails or returns no data
+            ValueError: If no data is collected
         """
         logger.info(f"Starting data collection from {len(self.sources)} sources")
         all_data = []
         successful_sources = 0
         failed_sources = 0
+        failures = []
 
         for source in self.sources:
             source_id = source.get('id', 'unknown')
@@ -73,15 +75,23 @@ class DataMerger:
                     logger.info(f"Successfully collected {len(df)} records from {source_name}")
                     successful_sources += 1
                 else:
-                    logger.warning(f"No data collected from {source_name}")
+                    failed_sources += 1
+                    failures.append(f"{source_name}: no data returned")
+                    logger.error(f"No data collected from {source_name}")
 
             except Exception as e:
                 failed_sources += 1
+                failures.append(f"{source_name}: {e!r}")
                 logger.error(f"Failed to process source '{source_name}': {e}", exc_info=True)
-                # Continue with other sources even if one fails
-                continue
+                # Keep going so every failing source is logged, but the run fails below
 
         logger.info(f"Collection complete: {successful_sources} successful, {failed_sources} failed")
+
+        # A partial result must never reach the CSV: any failing source fails the run.
+        if failed_sources:
+            error_msg = f"{failed_sources} source(s) failed, refusing partial output: " + "; ".join(failures)
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
         # Check if we have any data
         if not all_data:
