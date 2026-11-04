@@ -71,7 +71,7 @@ class GoogleMapsSelectors:
     # CREATE_DIALOG that contains the Create button; the input must be unique inside it (inputs outside
     # the dialog, a combobox and textareas, do not count).
     CREATE_DIALOG = '[role="dialog"]'
-    LIST_NAME_INPUT = '[role="dialog"] input[type="text"]'
+    LIST_NAME_INPUT = 'input[type="text"]'   # looked up inside the Create dialog locator, so no dialog prefix
     CREATE_LIST_CONFIRM = 'button[data-value="Create"], button[aria-label="Create"], button[aria-label="建立"]'
 
     # ---- saved-lists view (used only by --count) ---------------------------

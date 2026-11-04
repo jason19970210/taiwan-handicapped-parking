@@ -417,12 +417,19 @@ _HAS_TEXT = re.compile(r':has-text\("([^"]*)"\)')
 _CLAUSE = re.compile(r'^(?:\[role="dialog"\] )?([a-z]*)(?:#([\w-]+))?((?:\[[^\]]+\]|:has-text\("[^"]*"\))*)$')
 
 
-def _clause_matches(el, clause):
+def _clause_matches(el, clause, stop=None):
     m = _CLAUSE.match(clause)
     assert m, f"fake cannot parse selector clause: {clause!r}"
     tag, ident, rest = m.groups()
-    if clause.startswith('[role="dialog"] ') and not any(a.attrs.get("role") == "dialog" for a in el.ancestors()):
-        return False
+    if clause.startswith('[role="dialog"] '):
+        # like Playwright inside a scoped locator: the ancestor must sit below the scope element, not be it
+        anc = []
+        for a in el.ancestors():
+            if stop is not None and a.uid == stop.uid:
+                break
+            anc.append(a)
+        if not any(a.attrs.get("role") == "dialog" for a in anc):
+            return False
     if tag and el.tag != tag:
         return False
     if ident and el.attrs.get("id") != ident:
@@ -439,8 +446,8 @@ def _clause_matches(el, clause):
     return True
 
 
-def matches(el, selector):
-    return any(_clause_matches(el, c.strip()) for c in selector.split(", "))
+def matches(el, selector, stop=None):
+    return any(_clause_matches(el, c.strip(), stop) for c in selector.split(", "))
 
 
 class FakeLocator:
@@ -449,7 +456,7 @@ class FakeLocator:
 
     def _all(self):
         everything = self.page.elements()            # fresh tree; elements are compared by uid
-        els = [e for e in everything if matches(e, self.selector)]
+        els = [e for e in everything if matches(e, self.selector, self.scope)]
         if self.scope is not None:
             els = [e for e in els if self.scope.uid in [a.uid for a in e.ancestors()]]
         if self.has is not None:
