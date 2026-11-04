@@ -96,13 +96,21 @@ tail -n 20 ~/.local/state/thp-maps/sync.log    # JSON lines: wrapper, intent, op
 `sync.log` alone reconstructs a run. Every line has `ts` and `run_id`; the wrapper passes its own
 run id so its lines and the sync lines match. Events:
 
-- `wrapper`: `stage` (`start`, `args`, `pull`, `exit`, `alert`), `rc`, `detail`. A failed `git pull` shows here;
+- `wrapper`: `stage` (`start`, `args`, `pull`, `stderr`, `exit`, `alert`), `rc`, `detail`. A failed `git pull` shows here;
   `args` rc 1 means a `--state` argument was refused (the state directory comes only from `THP_STATE_DIR`).
+  `stderr` is written when `sync-lists` exits non-zero with something on stderr (Xvfb failed to start,
+  import error, rejected argument): `detail` holds its last 5 lines, cut to 500 characters. The whole stderr
+  of the latest run is in `~/.local/state/thp-maps/last_stderr.log` (overwritten each run; the journal gets a copy too).
 - `start`: planned Google ops and ids, places to add, how many place groups hold more than one id.
 - `intent`: written before an op is sent to the browser: `list`, `place` (lat,lon at 6 decimals),
-  `op` (`ensure`, `add`, `remove`, `forget`), `ids`.
+  `op` (`ensure`, `add`, `remove`, `forget`), `ids`; an `ensure` intent also carries `create_pending`
+  (time of an earlier Create whose list was never seen, or `null`).
 - `op`: the outcome: `list`, `place`, `point_id`, `op` (`session`, `ensure`, `add`, `remove`,
   `forget`, `count`), `result`, `ms`, `reason`.
+- A failed `ensure` after a Create leaves `create_pending` in the state file. For one hour no second
+  Create is sent for that list (the op fails with "a Create is pending since ... no second Create is sent
+  until ..."); when the list shows up, the next `ensure` adopts it and clears the marker. After the hour
+  the next run may create again, so a lost Create does not block the list forever.
 - `skipped`: entities not processed, with the reason (list that could not be created, max-ops
   reached, state point without coordinates).
 - `state_write_failed`: a verified Google op whose state write failed (the run stops, exit 1).

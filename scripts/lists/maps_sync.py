@@ -38,7 +38,7 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -65,6 +65,11 @@ MAX_CONSECUTIVE_FAILURES = 3
 VIEWPORT = {"width": 1440, "height": 900}
 LAUNCH_ARGS = ["--password-store=basic"]
 MAX_FAILURE_SHOTS = 5
+# Google shows a new list seconds to minutes after Create. A Create whose result was not seen is recorded as
+# "create_pending"; inside this window no second Create is sent (a manual rerun may not), past it the daily
+# run may create again (the first one is then very likely lost).
+PENDING_CREATE_WINDOW = timedelta(hours=1)
+CREATE_WAITS_MS = (3000, 6000, 12000)    # fresh views 3, 9 and 21 s after Create
 
 
 # ---- errors --------------------------------------------------------------------
@@ -395,18 +400,26 @@ def _verify(page, name: str, lat: float, lon: float, expected: bool, attempts: i
     raise OpFailed(f"verify failed: '{name}' ticked={seen}, expected {expected}")
 
 
-def ensure_list(page, name: str, lat: float, lon: float) -> str:
+def ensure_list(page, name: str, lat: float, lon: float, allow_create: bool = True,
+                before_create: Optional[Callable[[], None]] = None, pending_note: str = "") -> str:
     """
     Make sure a list with exactly this name exists. Opens the Save dialog of the
     anchor place (lat, lon); if the list is missing it is created from the dialog
     ('New list'), which also saves the anchor place into it. That place is a point
     the same run adds next, and add_point treats an already-ticked list as done.
     Returns "exists" or "created".
+
+    allow_create=False (an earlier Create is still unseen) fails instead of creating; pending_note
+    says why. before_create runs after the name is filled, right before the Create click, so the
+    caller can record the attempt first; if it raises, Create is never clicked.
     """
     _open_save_dialog(page, lat, lon)
     if _find_list_item(page, name) is not None:
         _close_dialog(page)
         return "exists"
+    if not allow_create:
+        _close_dialog(page)
+        raise OpFailed(f"list '{name}' not found: {pending_note}")
     dialog = _save_dialog(page)
     if not dialog.locator(S.NEW_LIST_BUTTON).count():
         _fail(page, "new list button not found (NEW_LIST_BUTTON)")
@@ -416,10 +429,14 @@ def ensure_list(page, name: str, lat: float, lon: float) -> str:
     form = _one(page, _container_with(page, S.CREATE_DIALOG, S.CREATE_LIST_CONFIRM),
                 "list name dialog", "CREATE_DIALOG")
     _one(page, form.locator(S.LIST_NAME_INPUT), "list name input", "LIST_NAME_INPUT").fill(name, timeout=10000)
-    _one(page, form.locator(S.CREATE_LIST_CONFIRM), "create button", "CREATE_LIST_CONFIRM").click(timeout=10000)
+    confirm = _one(page, form.locator(S.CREATE_LIST_CONFIRM), "create button", "CREATE_LIST_CONFIRM")
+    if before_create:
+        before_create()
+    confirm.click(timeout=10000)
     # Google shows a new list only after a delay (live: not on the first fresh view 2 s later), so poll fresh views.
-    # If it never shows, the list may still exist: the next run finds it and adopts it instead of creating another.
-    for wait_ms in (3000, 6000, 12000):
+    # If it never shows, the list may still exist: the caller keeps the Create marked as pending, so the
+    # next run adopts the list if it appeared and does not create a second one.
+    for wait_ms in CREATE_WAITS_MS:
         page.wait_for_timeout(wait_ms)
         _open_save_dialog(page, lat, lon)
         try:
@@ -427,7 +444,9 @@ def ensure_list(page, name: str, lat: float, lon: float) -> str:
                 return "created"
         finally:
             _close_dialog(page)
-    raise OpFailed(f"list '{name}' not visible 21 s after Create; the next run adopts it if Google created it")
+    raise OpFailed(f"list '{name}' not visible {sum(CREATE_WAITS_MS) // 1000} s after Create; "
+                   f"the next run adopts it if Google created it and sends no second Create for "
+                   f"{int(PENDING_CREATE_WINDOW.total_seconds() // 60)} min")
 
 
 def add_point(page, name: str, lat: float, lon: float) -> str:
@@ -508,8 +527,9 @@ class PageOps:
     def check_session(self) -> None:
         self._guarded(check_session)
 
-    def ensure_list(self, task: Task) -> str:
-        return self._guarded(ensure_list, task.list, task.point["lat"], task.point["lon"])
+    def ensure_list(self, task: Task, allow_create: bool = True, before_create=None, pending_note: str = "") -> str:
+        return self._guarded(ensure_list, task.list, task.point["lat"], task.point["lon"],
+                             allow_create, before_create, pending_note)
 
     def add(self, task: Task) -> str:
         return self._guarded(add_point, task.list, task.point["lat"], task.point["lon"])
@@ -541,13 +561,40 @@ def _apply_to_state(state: Dict[str, Any], task: Task) -> None:
     entry.setdefault("points", {})
     if task.op == "ensure":
         entry["exists"] = True
+        entry.pop("create_pending", None)       # the list is seen, so the unseen Create is settled
     elif task.op == "add":
         entry["exists"] = True
+        entry.pop("create_pending", None)
         for p in task.points:
             entry["points"][p["point_id"]] = _point_record(p)
     elif task.op in ("remove", "forget"):
         for p in task.points:
             entry["points"].pop(p["point_id"], None)
+
+
+def _parse_ts(text: Any) -> Optional[datetime]:
+    """An ISO timestamp as an aware UTC datetime; None when it is missing or not parseable."""
+    try:
+        t = datetime.fromisoformat(str(text))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _mark_create_pending(state: Dict[str, Any], state_path: Path, name: str) -> Callable[[], None]:
+    """
+    before_create hook: record "create_pending = now" in state on disk before Create is clicked. If the
+    write fails the marker is dropped again and the op fails, so Create is not sent unrecorded.
+    """
+    def mark() -> None:
+        entry = state.setdefault("lists", {}).setdefault(name, {})
+        entry["create_pending"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            write_state_atomic(state_path, state)
+        except Exception as e:
+            entry.pop("create_pending", None)
+            raise OpFailed(f"cannot record create_pending, not clicking Create: {type(e).__name__}: {e}") from e
+    return mark
 
 
 def run_sync(
@@ -571,6 +618,10 @@ def run_sync(
     that op again (add and remove are idempotent). Lists outside index.json are
     never planned, opened or written. --max-ops counts every Google op, list
     creation included.
+
+    A Create whose list is not seen afterwards leaves "create_pending" (time) in the list's state entry;
+    inside PENDING_CREATE_WINDOW the ensure fails without a second Create. The "intent" line of an
+    ensure carries the marker (or None).
 
     sync.log has: a "start" line, per op an "intent" line (before dispatch) and an "op"
     line (outcome and reason), "skipped" lines for entities not processed, a
@@ -664,11 +715,36 @@ def run_sync(
                     time.sleep(LONG_PAUSE_SECONDS)
             executed += 1
 
-            log.event(event="intent", list=task.list, place=task.key, op=task.op, ids=task.ids or [task.point_id])
+            pending = None            # ensure only: ISO time of a Create whose result was never seen
+            create_args: Dict[str, Any] = {}
+            if task.op == "ensure":
+                pending = state.get("lists", {}).get(task.list, {}).get("create_pending")
+                now = datetime.now(timezone.utc)
+                since = _parse_ts(pending) if pending is not None else None
+                if pending is not None and (since is None or since > now + timedelta(minutes=5)):
+                    # unreadable, or ahead of this clock: restart the window from now, so it is bounded
+                    # to one window and never permits a Create early
+                    since = now
+                    state["lists"][task.list]["create_pending"] = now.isoformat(timespec="seconds")
+                    try:
+                        write_state_atomic(state_path, state)
+                    except Exception:
+                        pass              # the op still fails without a Create; the next run retries the rewrite
+                    pending = f"{pending} (unreadable or in the future; window restarted at {state['lists'][task.list]['create_pending']})"
+                if since and now - since < PENDING_CREATE_WINDOW:
+                    until = (since + PENDING_CREATE_WINDOW).isoformat(timespec="seconds")
+                    create_args = {"allow_create": False, "pending_note": (
+                        f"a Create is pending since {pending}, the list is still not visible, "
+                        f"and no second Create is sent until {until}")}
+                else:
+                    create_args = {"before_create": _mark_create_pending(state, state_path, task.list)}
+            log_extra = {"create_pending": pending} if task.op == "ensure" else {}
+            log.event(event="intent", list=task.list, place=task.key, op=task.op,
+                      ids=task.ids or [task.point_id], **log_extra)
             t0 = time.monotonic()
             try:
                 if task.op == "ensure":
-                    result = ops.ensure_list(task)
+                    result = ops.ensure_list(task, **create_args)
                 elif task.op == "add":
                     result = ops.add(task)
                 else:
@@ -695,7 +771,8 @@ def run_sync(
                 continue
 
             consecutive = 0
-            if not settle(task, result, t0):
+            note = "create_pending cleared (list is visible)" if pending and result == "exists" else ""
+            if not settle(task, result, t0, note):
                 return finish(EXIT_ERROR, "state write failed")
 
     if counters["done"] < planned:

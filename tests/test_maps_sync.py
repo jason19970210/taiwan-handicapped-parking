@@ -4,6 +4,7 @@ import contextlib
 import json
 import random
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -65,7 +66,7 @@ class FakeOps:
         if self.session_exc:
             raise self.session_exc
 
-    def ensure_list(self, task):
+    def ensure_list(self, task, allow_create=True, before_create=None, pending_note=""):
         self.calls.append(("ensure", task.list, task.point_id))
         return "created"
 
@@ -317,7 +318,7 @@ def test_failed_ensure_skips_that_list_only(tmp_path):
     d = make_lists(tmp_path, {LIST_A: pts(3), LIST_B: pts(2, 24.0)})
 
     class Ops(FakeOps):
-        def ensure_list(self, task):
+        def ensure_list(self, task, **kw):
             self.calls.append(("ensure", task.list, task.point_id))
             if task.list == LIST_A:
                 raise ms.OpFailed("no new list button")
@@ -542,8 +543,12 @@ class FakePage:
         self.row_role = "menuitemradio"
         self.extra_form_inputs = 0           # additional text inputs inside the New list form
         self.create_variant = "both"         # "both" | "data-value" | "aria-label" | "icon-only"
-        self.create_lag = 0                  # page views after "Create" during which Google does not show the new list yet
-        self.lag_name, self.lag_views, self._hide = None, 0, False
+        self.now_ms = 0                      # fake clock: only wait_for_timeout moves it
+        self.create_lag_ms = 0               # a new list stays invisible until this long after the Create click
+        self.tick_lag_ms = 0                 # a row toggle shows in fresh views only this long after the click
+        self.lag_name, self.lag_until = None, 0
+        self._stale = {}                     # (coords, list) -> (value before the click, visible-from ms)
+        self.create_clicks = 0
 
     # --- test conveniences
     @property
@@ -558,6 +563,14 @@ class FakePage:
         return self.places.get(coords, set())
 
     # --- the DOM
+    def seen(self):
+        """Membership of the current place as the page shows it: a lagged tick still reads as before."""
+        shown = set(self.membership(self.coords))
+        for (c, name), (before, until) in self._stale.items():
+            if c == self.coords and self.now_ms < until:
+                shown.add(name) if before else shown.discard(name)
+        return shown
+
     def row_lines(self, i, name):
         n = sum(1 for lists in self.places.values() if name in lists)      # places on this list, as Google counts
         count = f"{'Shared' if i % 3 == 0 else 'Private'} · {n} place{'s' if n != 1 else ''}"
@@ -565,12 +578,12 @@ class FakePage:
             return ["", "", name, count]
         if i % 3 == 1:
             return [name, count]
-        return [GLYPH_TICK if name in self.membership(self.coords) else GLYPH_LIST, name, count]
+        return [GLYPH_TICK if name in self.seen() else GLYPH_LIST, name, count]
 
     def row_attrs(self, i, name):
         attrs = {"role": self.row_role, "data-index": str(i), "jsaction": "actionmenu.select"}
         if self.checked_attr is None:
-            attrs["aria-checked"] = "true" if name in self.membership(self.coords) else "false"
+            attrs["aria-checked"] = "true" if name in self.seen() else "false"
         elif self.checked_attr != "<missing>":
             attrs["aria-checked"] = self.checked_attr
         return attrs
@@ -596,7 +609,7 @@ class FakePage:
                               lines=["Anyone with the link", "Private"]))
         els.append(El("input", {"type": "text", "role": "combobox", "id": "searchboxinput"}))
         els.append(El("textarea", {}))
-        n = len([x for x in self.membership(self.coords) if self._shown(x)])
+        n = len([x for x in self.seen() if self._shown(x)])
         for _ in range(self.save_button_count):
             v = "Save" if n == 0 else "Saved" if n == 1 else f"Saved ({n})"     # live: "Saved (2)" on two lists
             els.append(El("button", {"data-value": v, "aria-label": v}, text=v, kind="save_button"))
@@ -628,7 +641,7 @@ class FakePage:
         return self._number(els)
 
     def _shown(self, name):
-        return not (self._hide and name == self.lag_name)
+        return not (name == self.lag_name and self.now_ms < self.lag_until)
 
     @staticmethod
     def _number(els):
@@ -641,8 +654,11 @@ class FakePage:
             self.dialog_open = True
         elif el.kind == "row":
             if self.toggle_works:
-                self.places.setdefault(self.coords, set()).symmetric_difference_update(
-                    {self.list_names[int(el.attrs["data-index"])]})
+                name = self.list_names[int(el.attrs["data-index"])]
+                lists = self.places.setdefault(self.coords, set())
+                if self.tick_lag_ms:
+                    self._stale[(self.coords, name)] = (name in lists, self.now_ms + self.tick_lag_ms)
+                lists.symmetric_difference_update({name})
         elif el.kind == "new_list":
             if self.new_list_goes_to:
                 self.url = self.new_list_goes_to
@@ -651,14 +667,14 @@ class FakePage:
         elif el.kind == "create":
             self.list_names.append(self.new_name)
             self.places.setdefault(self.coords, set()).add(self.new_name)
-            self.lag_name, self.lag_views = self.new_name, self.create_lag
+            self.create_clicks += 1
+            self.lag_name, self.lag_until = self.new_name, self.now_ms + self.create_lag_ms
             self.creating = False
             self.dialog_open = False
 
     # --- the Playwright surface the ops use
     def goto(self, url, wait_until=None, timeout=None):
         self.visited.append(url)
-        self._hide, self.lag_views = self.lag_views > 0, max(0, self.lag_views - 1)
         self.url = self.redirect_url or url
         self.dialog_open = False
         self.creating = False
@@ -673,7 +689,7 @@ class FakePage:
         return FakeLocator(self, selector, has=has.selector if has is not None else None)
 
     def wait_for_timeout(self, ms):
-        pass
+        self.now_ms += ms
 
     def screenshot(self, path=None):
         pass
@@ -1250,7 +1266,7 @@ def test_p7_skipped_entities_and_state_write_failures_are_logged(tmp_path, monke
     d = make_lists(tmp_path, {LIST_A: pts(2)})
 
     class Ops(FakeOps):
-        def ensure_list(self, task):
+        def ensure_list(self, task, **kw):
             raise ms.OpFailed("no new list button")
 
     run(tmp_path, d, Ops())
@@ -1292,19 +1308,21 @@ def test_p7_skipped_entities_and_state_write_failures_are_logged(tmp_path, monke
 needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 
 
-def _run_wrapper(tmp_path, git_rc=0, sync_rc=0, alert=True, args=("--dry-run",)):
+def _run_wrapper(tmp_path, git_rc=0, sync_rc=0, alert=True, args=("--dry-run",), child_err=""):
     stubs = tmp_path / "bin"
     stubs.mkdir()
     marker = tmp_path / "xvfb_args"
     (stubs / "git").write_text(
         '#!/bin/sh\ncase "$*" in *pull*) echo "${FAKE_GIT_MSG:-Already up to date.}"; exit ${FAKE_GIT_RC:-0};; esac\n'
         'echo abc1234\n', encoding="utf-8")
-    (stubs / "xvfb-run").write_text(f'#!/bin/sh\necho "$@" > {marker}\nexit ${{FAKE_RC:-0}}\n', encoding="utf-8")
+    (stubs / "xvfb-run").write_text(
+        f'#!/bin/sh\necho "$@" > {marker}\n[ -n "$FAKE_ERR" ] && echo "$FAKE_ERR" >&2\necho child-stdout\nexit ${{FAKE_RC:-0}}\n',
+        encoding="utf-8")
     (stubs / "notify").write_text(f'#!/bin/sh\necho "$*" >> {tmp_path}/alerts\n', encoding="utf-8")
     for f in stubs.iterdir():
         f.chmod(0o755)
     env = {"PATH": f"{stubs}:/usr/bin:/bin", "HOME": str(tmp_path), "THP_STATE_DIR": str(tmp_path / "st"),
-           "FAKE_GIT_RC": str(git_rc), "FAKE_RC": str(sync_rc), "FAKE_GIT_MSG": "fatal: Not possible to fast-forward"
+           "FAKE_GIT_RC": str(git_rc), "FAKE_RC": str(sync_rc), "FAKE_ERR": child_err, "FAKE_GIT_MSG": "fatal: Not possible to fast-forward"
            if git_rc else "Already up to date."}
     if alert:
         env["THP_ALERT_CMD"] = str(stubs / "notify")
@@ -1376,6 +1394,54 @@ def test_p7_wrapper_logs_a_failed_pull_and_does_not_sync(tmp_path):
 
 
 @needs_bash
+def test_wrapper_logs_the_last_stderr_lines_of_a_failing_child(tmp_path):
+    err = "\n".join(f"noise {i}" for i in range(1, 4)) + "\nXvfb: cannot open display\nline5\nline6\nline7\nImportError: no \"module\""
+    r, lines, _ = _run_wrapper(tmp_path, sync_rc=2, child_err=err)
+    assert r.returncode == 2                                                  # exactly the child's code
+    assert [(l["stage"], l["rc"]) for l in lines] == [("start", 0), ("pull", 0), ("stderr", 2), ("exit", 2)]
+    detail = lines[2]["detail"]
+    assert 'ImportError: no \\"module\\"' not in detail and 'ImportError: no "module"' in detail   # JSON-escaped, so it parsed
+    assert "line5" in detail and "Xvfb: cannot open display" in detail and "noise 3" not in detail   # last 5 lines only
+    assert (tmp_path / "st" / "last_stderr.log").read_text(encoding="utf-8").startswith("noise 1\n")  # the whole file stays
+    assert "Xvfb: cannot open display" in r.stderr                            # the journal still sees the child's stderr
+    assert "child-stdout" in r.stdout                                         # stdout untouched
+
+
+@needs_bash
+def test_wrapper_stderr_full_of_quotes_and_backslashes_still_logs_valid_json(tmp_path):
+    err = ('\\"' * 400) + "\n" + ("臺北市 \\ \"x\" " * 60) + "\nRuntimeError: last line"
+    r, lines, _ = _run_wrapper(tmp_path, sync_rc=1, child_err=err)    # _run_wrapper json.loads every line
+    assert r.returncode == 1
+    st = [l for l in lines if l["stage"] == "stderr"][0]
+    assert len(st["detail"]) <= 500 and st["detail"].endswith("RuntimeError: last line")
+
+
+@needs_bash
+def test_wrapper_stderr_cut_inside_a_utf8_character_still_logs_valid_utf8_json(tmp_path):
+    r, lines, _ = _run_wrapper(tmp_path, sync_rc=1, child_err="台" * 161 + "X")   # 484 bytes: tail -c 480 splits a character
+    assert r.returncode == 1                                                     # read_text(utf-8) + json.loads passed
+    assert [l for l in lines if l["stage"] == "stderr"][0]["detail"].endswith("台X")
+
+
+@needs_bash
+def test_wrapper_refuses_to_sync_when_the_stderr_capture_file_is_unwritable(tmp_path):
+    st = tmp_path / "st"
+    st.mkdir()
+    (st / "last_stderr.log").mkdir()                    # a directory cannot be truncated: capture fails
+    r, lines, marker = _run_wrapper(tmp_path, sync_rc=0)
+    assert r.returncode == 1 and not marker.exists()    # the child never ran
+    assert [(l["stage"], l["rc"]) for l in lines][-2:] == [("capture", 1), ("exit", 1)]
+
+
+@needs_bash
+def test_wrapper_writes_no_stderr_line_when_the_child_succeeds(tmp_path):
+    r, lines, _ = _run_wrapper(tmp_path, sync_rc=0, child_err="a harmless warning")
+    assert r.returncode == 0
+    assert [l["stage"] for l in lines] == ["start", "pull", "exit"]
+    assert "a harmless warning" in (tmp_path / "st" / "last_stderr.log").read_text(encoding="utf-8")
+
+
+@needs_bash
 def test_p7_wrapper_without_alert_command_says_so_in_the_log(tmp_path):
     r, lines, _ = _run_wrapper(tmp_path, sync_rc=4, alert=False)
     assert r.returncode == 4 and lines[-1]["stage"] == "alert" and "no alert sent" in lines[-1]["detail"]
@@ -1413,19 +1479,157 @@ def test_live_save_button_on_two_lists_reads_saved_with_a_count_and_still_matche
 
 def test_ensure_waits_for_a_new_list_that_google_shows_only_after_a_delay():
     p = FakePage()
-    p.create_lag = 2                     # the first two fresh views after Create do not show it yet (seen live)
+    p.create_lag_ms = 10000              # the first two fresh views after Create do not show it yet (seen live)
     assert ms.ensure_list(p, "New district", 25.0, 121.5) == "created"
     assert "New district" in p.membership("25.000000,121.500000")
 
 
-def test_ensure_that_never_sees_the_new_list_fails_and_the_next_run_adopts_it():
+def test_ensure_that_never_sees_the_new_list_fails_and_a_later_ensure_adopts_it():
+    # one ensure only; what a second RUN may do while the first Create is unseen is covered by the pending tests below
     p = FakePage()
-    p.create_lag = 50
+    p.create_lag_ms = 10 ** 7
     with pytest.raises(ms.OpFailed, match="not visible"):
         ms.ensure_list(p, "New district", 25.0, 121.5)
-    p.lag_views = 0
+    p.lag_until = 0                      # Google caught up
     assert ms.ensure_list(p, "New district", 25.0, 121.5) == "exists"
     assert p.list_names.count("New district") == 1          # adopted, never created twice
+
+
+# ---- fake clock: the waits in the ops must really cover Google's lag --------------------------------------
+# Schedules hard-coded on purpose: a test that read them from the code would follow a shortened wait.
+# ensure: fresh views 3, 9 and 21 s after the Create click. verify: reads 2, 6 and 14 s after the tick.
+@pytest.mark.parametrize("lag_ms", [0, 3000, 3001, 9000, 9001, 21000])
+def test_ensure_sees_a_list_that_appears_by_the_last_check(lag_ms):
+    p = FakePage()
+    p.create_lag_ms = lag_ms
+    assert ms.ensure_list(p, "New district", 25.0, 121.5) == "created"
+
+
+def test_ensure_fails_when_the_list_appears_after_the_last_check():
+    p = FakePage()
+    p.create_lag_ms = 21001
+    with pytest.raises(ms.OpFailed, match="not visible"):
+        ms.ensure_list(p, "New district", 25.0, 121.5)
+    assert p.now_ms >= 21000             # it waited the whole schedule before giving up
+
+
+@pytest.mark.parametrize("lag_ms", [0, 2000, 2001, 6000, 6001, 14000])
+@pytest.mark.parametrize("fn,start", [(ms.add_point, set()), (ms.remove_point, {LIST_A})])
+def test_verify_sees_a_tick_that_shows_by_the_last_read(fn, start, lag_ms):
+    p = FakePage()
+    p.places["25.000000,121.500000"] = set(start)
+    p.tick_lag_ms = lag_ms
+    assert fn(p, LIST_A, 25.0, 121.5) in ("added", "removed")
+    assert p.now_ms >= max(lag_ms, 2000)
+
+
+@pytest.mark.parametrize("fn,start", [(ms.add_point, set()), (ms.remove_point, {LIST_A})])
+def test_verify_fails_when_the_tick_shows_after_the_last_read(fn, start):
+    p = FakePage()
+    p.places["25.000000,121.500000"] = set(start)
+    p.tick_lag_ms = 14001
+    with pytest.raises(ms.OpFailed, match="verify failed"):
+        fn(p, LIST_A, 25.0, 121.5)
+    assert p.now_ms >= 14000
+
+
+# ---- a Create whose result was not seen must never be repeated (duplicate lists) ----------------------------
+def _pending_state(tmp_path, age):
+    ts = (datetime.now(timezone.utc) - age).isoformat(timespec="seconds")
+    sp = tmp_path / "state" / "sync_state.json"
+    ms.write_state_atomic(sp, {"version": 1, "lists": {LIST_A: {"create_pending": ts}}})
+    return sp, ts
+
+
+def test_second_run_does_not_create_a_second_list_while_the_first_create_is_unseen(tmp_path):
+    d = make_lists(tmp_path, {LIST_A: pts(2)})
+    page = FakePage(lists=[OLD_BIG_LIST])
+    page.create_lag_ms = 10 ** 7                         # Google shows the list after both runs are over
+    code1, sp, logp = run(tmp_path, d, ms.PageOps(page))
+    assert code1 == 2 and page.list_names.count(LIST_A) == 1
+    assert read_state(sp)["lists"][LIST_A]["create_pending"]
+    code2, _, _ = run(tmp_path, d, ms.PageOps(page))
+    assert code2 == 2                                    # a failed op, same exit code as run 1
+    assert page.list_names.count(LIST_A) == 1 and page.create_clicks == 1
+    fails = [l for l in log_lines(logp) if l.get("result") == "fail"]
+    assert len(fails) == 2 and "Create is pending since" in fails[1]["reason"]
+    assert "no second Create" in fails[1]["reason"] and "not visible" in fails[1]["reason"]
+    intents = [l for l in log_lines(logp) if l.get("event") == "intent"]
+    assert intents[0]["create_pending"] is None and intents[1]["create_pending"] == read_state(sp)["lists"][LIST_A]["create_pending"]
+
+
+@pytest.mark.parametrize("marker", ["not-a-time", "", "2099-01-01T00:00:00+00:00"])
+def test_unreadable_or_future_pending_marker_blocks_create_and_restarts_a_bounded_window(tmp_path, marker):
+    d = make_lists(tmp_path, {LIST_A: pts(2)})
+    sp = tmp_path / "state" / "sync_state.json"
+    ms.write_state_atomic(sp, {"version": 1, "lists": {LIST_A: {"create_pending": marker}}})
+    page = FakePage(lists=[OLD_BIG_LIST])
+    code, _, logp = run(tmp_path, d, ms.PageOps(page))
+    assert code == 2 and page.create_clicks == 0
+    since = datetime.fromisoformat(read_state(sp)["lists"][LIST_A]["create_pending"])
+    assert abs((datetime.now(timezone.utc) - since).total_seconds()) < 60      # window restarted now, so it ends within 1 h
+    fail = [l for l in log_lines(logp) if l.get("result") == "fail"][0]
+    assert "unreadable or in the future" in fail["reason"]
+
+
+def test_pending_marker_survives_state_writes_of_other_lists(tmp_path):
+    d = make_lists(tmp_path, {LIST_A: pts(2), LIST_B: pts(2, 24.0)})
+    page = FakePage(lists=[OLD_BIG_LIST, LIST_B])
+    page.create_lag_ms = 10 ** 7
+    code, sp, _ = run(tmp_path, d, ms.PageOps(page))
+    st = read_state(sp)["lists"]
+    assert code == 2 and st[LIST_A]["create_pending"] and len(st[LIST_B]["points"]) == 2
+
+
+def test_create_pending_older_than_an_hour_allows_a_new_create(tmp_path):
+    d = make_lists(tmp_path, {LIST_A: pts(2)})
+    sp, _ = _pending_state(tmp_path, timedelta(hours=2))
+    page = FakePage(lists=[OLD_BIG_LIST])
+    code, _, _ = run(tmp_path, d, ms.PageOps(page))
+    assert code == 0 and page.create_clicks == 1 and page.list_names.count(LIST_A) == 1
+    assert "create_pending" not in read_state(sp)["lists"][LIST_A]
+
+
+def test_create_pending_inside_the_hour_blocks_a_new_create(tmp_path):
+    d = make_lists(tmp_path, {LIST_A: pts(2)})
+    _pending_state(tmp_path, timedelta(minutes=59))
+    page = FakePage(lists=[OLD_BIG_LIST])
+    code, _, _ = run(tmp_path, d, ms.PageOps(page))
+    assert code == 2 and page.create_clicks == 0
+
+
+def test_pending_create_that_became_visible_is_adopted_and_the_marker_cleared(tmp_path):
+    d = make_lists(tmp_path, {LIST_A: pts(2)})
+    sp, _ = _pending_state(tmp_path, timedelta(minutes=5))
+    page = FakePage(lists=[OLD_BIG_LIST, LIST_A])
+    code, _, logp = run(tmp_path, d, ms.PageOps(page))
+    assert code == 0 and page.create_clicks == 0
+    entry = read_state(sp)["lists"][LIST_A]
+    assert entry["exists"] is True and "create_pending" not in entry
+    ens = [l for l in log_lines(logp) if l.get("op") == "ensure" and l.get("event") == "op"]
+    assert ens[0]["result"] == "exists" and "create_pending cleared" in ens[0]["reason"]
+
+
+def test_state_write_failure_before_create_means_the_create_button_is_never_clicked(tmp_path, monkeypatch):
+    d = make_lists(tmp_path, {LIST_A: pts(2)})
+    page = FakePage(lists=[OLD_BIG_LIST])
+    monkeypatch.setattr(ms, "write_state_atomic", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    code, sp, logp = run(tmp_path, d, ms.PageOps(page))
+    assert code == 2 and page.create_clicks == 0 and page.list_names == [OLD_BIG_LIST]
+    assert not sp.exists()
+    fail = [l for l in log_lines(logp) if l.get("result") == "fail"]
+    assert len(fail) == 1 and "disk full" in fail[0]["reason"] and "not clicking Create" in fail[0]["reason"]
+
+
+def test_ensure_list_records_the_pending_create_right_before_the_click_and_can_refuse_to_create():
+    p = FakePage(lists=[OLD_BIG_LIST])
+    seen = []
+    ms.ensure_list(p, LIST_A, 25.0, 121.5, before_create=lambda: seen.append((p.create_clicks, p.new_name)))
+    assert seen == [(0, LIST_A)]                         # called after the name is filled, before the click
+    p2 = FakePage(lists=[OLD_BIG_LIST])
+    with pytest.raises(ms.OpFailed, match="pending since T0"):
+        ms.ensure_list(p2, LIST_A, 25.0, 121.5, allow_create=False, pending_note="a Create is pending since T0")
+    assert p2.create_clicks == 0 and not p2.creating
 
 
 def test_live_save_menu_is_the_role_menu_and_ignores_unrelated_dialogs():
